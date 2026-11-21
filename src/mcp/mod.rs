@@ -4,6 +4,8 @@
 //! - modern (2026-07-28): every request carries its version in `_meta`; no handshake.
 //! - legacy (2025-11-25 and earlier): an `initialize` request opens a session.
 
+mod tools;
+
 use serde_json::{Value, json};
 
 /// Revisions served with per-request `_meta`.
