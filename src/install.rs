@@ -20,62 +20,142 @@ pub struct InstallOptions {
     pub accept_eula: bool,
 }
 
-/// Sets up everything: directories with their ACLs, this executable, Procmon, the task.
-/// Running it again repairs or refreshes an existing installation.
+/// The steps of an install, in the order they run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// The root, `bin`, `jobs` and `out` with their ACLs.
+    Folders,
+    /// procmon-mcp.exe, plus the setup when the setup installs.
+    Programs,
+    /// Download Process Monitor and verify its signature.
+    Procmon,
+    /// The scheduled task, plus the Installed apps entry when the setup is kept.
+    Register,
+}
+
+impl Step {
+    pub const ALL: [Step; 4] = [Step::Folders, Step::Programs, Step::Procmon, Step::Register];
+}
+
+/// Where the programs placed in `bin` come from.
+pub enum Programs<'a> {
+    /// `procmon-mcp install`: this executable is the server.
+    ThisExecutable,
+    /// The graphical setup: the server it carries, and the setup itself, kept to
+    /// uninstall from Settings.
+    Setup { server: &'a [u8] },
+}
+
+/// An install that passed its checks: elevated, by the signed-in user.
+pub struct Installer {
+    layout: Layout,
+    user: String,
+}
+
+impl Installer {
+    /// Checks that installing may go ahead, before anything changes.
+    pub fn prepare() -> Result<Installer, String> {
+        require_elevated()?;
+        let layout = Layout::system().map_err(|e| format!("cannot locate ProgramData: {e}"))?;
+        let user = win::current_user_sid().map_err(|e| format!("cannot identify the user: {e}"))?;
+        let signed_in = win::signed_in_user_sid()
+            .map_err(|e| format!("cannot identify the signed-in user: {e}"))?;
+        ensure_signed_in_user(&user, &signed_in)?;
+        Ok(Installer { layout, user })
+    }
+
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    /// Runs one step. Running all of them again repairs or refreshes an installation.
+    pub fn run(&self, step: Step, programs: &Programs) -> Result<StepOutcome, String> {
+        let layout = &self.layout;
+        match step {
+            Step::Folders => {
+                prepare_root(layout)?;
+                for (dir, sddl) in [
+                    (layout.bin(), layout::bin_sddl()),
+                    (layout.jobs(), layout::jobs_sddl(&self.user)),
+                    (layout.out(), layout::out_sddl(&self.user)),
+                ] {
+                    ensure_plain_dir(&dir)?;
+                    win::set_security(&dir, &sddl)
+                        .map_err(|e| format!("cannot set permissions on {}: {e}", dir.display()))?;
+                }
+            }
+            Step::Programs => match programs {
+                Programs::ThisExecutable => copy_self(layout)?,
+                Programs::Setup { server } => {
+                    write_program(&layout.server(), server)?;
+                    copy_running_to(&layout.setup())?;
+                }
+            },
+            Step::Procmon => {
+                return update_procmon(layout).map(|outcome| match outcome {
+                    UpdateOutcome::Updated => StepOutcome::ProcmonUpdated,
+                    UpdateOutcome::UpToDate => StepOutcome::ProcmonUpToDate,
+                });
+            }
+            Step::Register => {
+                register_task(layout, &self.user)?;
+                // A CLI repair of a setup install keeps the entry up to date.
+                if layout.setup().is_file() {
+                    let entry = win::KeySnapshot {
+                        values: Some(uninstall_entry(layout, installed_size_kib(&layout.bin()))),
+                    };
+                    win::restore_key(win::Hive::LocalMachine, UNINSTALL_KEY, &entry)
+                        .map_err(|e| format!("cannot add procmon-mcp to Installed apps: {e}"))?;
+                }
+            }
+        }
+        Ok(StepOutcome::Done)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepOutcome {
+    Done,
+    ProcmonUpdated,
+    ProcmonUpToDate,
+}
+
+/// `procmon-mcp install`: shows what will change, asks to accept the license, then
+/// runs every step, reporting each on stderr.
 pub fn install(options: &InstallOptions) -> Result<(), String> {
-    require_elevated()?;
+    let installer = Installer::prepare()?;
+    let layout = installer.layout();
     let style = Style::for_stderr();
-    let layout = Layout::system().map_err(|e| format!("cannot locate ProgramData: {e}"))?;
     // Shown even with --accept-eula, so every run records what it is about to change.
-    eprint!("{}", install_notice(&layout, std::env::consts::ARCH, style));
+    eprint!("{}", install_notice(layout, std::env::consts::ARCH, style));
     if !options.accept_eula && !confirm_eula(std::io::stdin().lock(), std::io::stderr()) {
         return Err("the Sysinternals license terms were not accepted".to_owned());
     }
     eprintln!();
-    let user = win::current_user_sid().map_err(|e| format!("cannot identify the user: {e}"))?;
-    let signed_in = win::signed_in_user_sid()
-        .map_err(|e| format!("cannot identify the signed-in user: {e}"))?;
-    ensure_signed_in_user(&user, &signed_in)?;
 
-    step(
-        style,
-        &format!(
-            "Creating {}",
-            style.paint(&layout.root.display().to_string(), Color::Code)
-        ),
-        || {
-            prepare_root(&layout)?;
-            for (dir, sddl) in [
-                (layout.bin(), layout::bin_sddl()),
-                (layout.jobs(), layout::jobs_sddl(&user)),
-                (layout.out(), layout::out_sddl(&user)),
-            ] {
-                ensure_plain_dir(&dir)?;
-                win::set_security(&dir, &sddl)
-                    .map_err(|e| format!("cannot set permissions on {}: {e}", dir.display()))?;
-            }
-            Ok("Done!")
-        },
-    )?;
-    step(
-        style,
-        &format!("Copying {}", style.paint("procmon-mcp.exe", Color::Code)),
-        || copy_self(&layout).map(|()| "Done!"),
-    )?;
-    step(style, "Downloading Process Monitor", || {
-        update_procmon(&layout).map(|outcome| match outcome {
-            UpdateOutcome::Updated => "Done! (Microsoft signature verified)",
-            UpdateOutcome::UpToDate => "Already up to date.",
-        })
-    })?;
-    step(
-        style,
-        &format!(
-            "Registering the scheduled task {}",
-            style.paint(task::TASK_NAME, Color::Code)
-        ),
-        || register_task(&layout, &user).map(|()| "Done!"),
-    )?;
+    for step in Step::ALL {
+        let label = match step {
+            Step::Folders => format!(
+                "Creating {}",
+                style.paint(&layout.root.display().to_string(), Color::Code)
+            ),
+            Step::Programs => format!("Copying {}", style.paint("procmon-mcp.exe", Color::Code)),
+            Step::Procmon => "Downloading Process Monitor".to_owned(),
+            Step::Register => format!(
+                "Registering the scheduled task {}",
+                style.paint(task::TASK_NAME, Color::Code)
+            ),
+        };
+        report_step(style, &label, || {
+            installer
+                .run(step, &Programs::ThisExecutable)
+                .map(|outcome| match outcome {
+                    StepOutcome::Done => "Done!",
+                    StepOutcome::ProcmonUpdated => "Done! (Microsoft signature verified)",
+                    StepOutcome::ProcmonUpToDate => "Already up to date.",
+                })
+        })?;
+    }
 
     eprintln!(
         "\n{} is installed. Add this to {} in Claude Desktop's {}:\n\n{}\n",
@@ -88,7 +168,7 @@ pub fn install(options: &InstallOptions) -> Result<(), String> {
 }
 
 /// Runs one install step, printing `label ... ` and then its result on the same line.
-fn step(
+fn report_step(
     style: Style,
     label: &str,
     run: impl FnOnce() -> Result<&'static str, String>,
@@ -242,14 +322,18 @@ fn ensure_plain_dir(dir: &Path) -> Result<(), String> {
 }
 
 fn copy_self(layout: &Layout) -> Result<(), String> {
+    copy_running_to(&layout.server())
+}
+
+/// Copies this executable to `target`, unless it already runs from there (a repair).
+fn copy_running_to(target: &Path) -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| format!("cannot locate this executable: {e}"))?;
-    let target = layout.server();
-    if same_file(&me, &target) {
+    if same_file(&me, target) {
         return Ok(());
     }
     let tmp = target.with_extension("exe.new");
     std::fs::copy(&me, &tmp).map_err(|e| format!("cannot copy to {}: {e}", tmp.display()))?;
-    replace_with(&tmp, &target)
+    replace_with(&tmp, target)
 }
 
 /// Writes a program the setup carries, replacing `target` only once it is complete.
@@ -257,7 +341,7 @@ fn write_program(target: &Path, bytes: &[u8]) -> Result<(), String> {
     if bytes.is_empty() {
         return Err(format!(
             "this setup was built without {}; build procmon-mcp first",
-            target.file_name().unwrap_or_default().display()
+            target.file_name().unwrap_or_default().to_string_lossy()
         ));
     }
     let tmp = target.with_extension("exe.new");
