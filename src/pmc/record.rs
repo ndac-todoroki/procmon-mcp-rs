@@ -34,16 +34,66 @@ impl fmt::Display for PmcError {
 impl std::error::Error for PmcError {}
 
 /// Parses a whole PMC file.
-pub fn parse(_bytes: &[u8]) -> Result<Configuration, PmcError> {
-    Ok(Configuration::default())
+pub fn parse(bytes: &[u8]) -> Result<Configuration, PmcError> {
+    let mut records = Vec::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let record_size = u32_at(offset) as usize;
+        let header_and_name_size = u32_at(offset + 8) as usize;
+        let data_size = u32_at(offset + 12) as usize;
+        let name_units: Vec<u16> = bytes[offset + HEADER_SIZE..offset + header_and_name_size]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let name = String::from_utf16(&name_units[..name_units.len() - 1]).unwrap();
+        let data_start = offset + header_and_name_size;
+        let data = bytes[data_start..data_start + data_size].to_vec();
+        records.push(Record { name, data });
+        offset += record_size;
+    }
+    Ok(Configuration { records })
 }
+
+const HEADER_SIZE: usize = 0x10;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Builds one record by hand, independently of `to_bytes`.
+    fn record_bytes(name: &str, data: &[u8]) -> Vec<u8> {
+        let mut name_bytes: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        name_bytes.extend_from_slice(&[0, 0]);
+        let header_and_name = 0x10 + name_bytes.len() as u32;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header_and_name + data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0x10u32.to_le_bytes());
+        out.extend_from_slice(&header_and_name.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&name_bytes);
+        out.extend_from_slice(data);
+        out
+    }
+
+    fn record(name: &str, data: &[u8]) -> Record {
+        Record {
+            name: name.to_string(),
+            data: data.to_vec(),
+        }
+    }
+
     #[test]
     fn empty_input_is_a_configuration_without_records() {
         assert_eq!(parse(&[]), Ok(Configuration::default()));
+    }
+
+    #[test]
+    fn single_record_yields_its_name_without_nul_and_raw_data() {
+        let bytes = record_bytes("Profiling", &[1, 0, 0, 0]);
+
+        let config = parse(&bytes).unwrap();
+
+        assert_eq!(config.records, vec![record("Profiling", &[1, 0, 0, 0])]);
     }
 }
