@@ -145,10 +145,25 @@ pub fn encode_filter_rules(rules: &[FilterRule]) -> Vec<u8> {
         out.push(rule.action as u8);
         out.extend_from_slice(&size_u32(value.len()).to_le_bytes());
         out.extend_from_slice(&value);
-        out.extend_from_slice(&0u32.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&rule_int_value(rule.column, &rule.value).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
     }
     out
+}
+
+/// The `int_value` field, following procmon-parser `get_rule_integer_value`.
+///
+/// Digit strings that overflow u32 give 0 instead of failing. procmon-parser would raise
+/// there, but such a value cannot match any numeric column, so an error path in the
+/// encoder is not worth it.
+fn rule_int_value(column: Column, value: &str) -> u32 {
+    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        return value.parse().unwrap_or(0);
+    }
+    if column == Column::ARCHITECTURE {
+        return if value.contains("32") { 32 } else { 64 };
+    }
+    0
 }
 
 fn size_u32(size: usize) -> u32 {
@@ -266,6 +281,48 @@ mod tests {
                 rule_bytes(40071, 6, 1, "$Extend", 0),
             ])
         );
+    }
+
+    #[test]
+    fn int_value_is_the_number_when_the_value_is_all_ascii_digits() {
+        let rules = [rule(Column::PID, Relation::Is, Action::Include, "1234")];
+
+        assert_eq!(
+            encode_filter_rules(&rules),
+            rule_list(&[rule_bytes(40054, 0, 1, "1234", 1234)])
+        );
+    }
+
+    #[test]
+    fn int_value_is_zero_for_values_that_are_not_plain_u32_digits() {
+        // "+5" parses as a Rust integer but is not all digits; the last one overflows u32.
+        for value in ["", "+5", "12a", "4294967296"] {
+            let rules = [rule(Column::PID, Relation::Is, Action::Include, value)];
+
+            assert_eq!(
+                encode_filter_rules(&rules),
+                rule_list(&[rule_bytes(40054, 0, 1, value, 0)]),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn int_value_for_architecture_is_32_or_64() {
+        for (value, expected) in [("32-bit", 32), ("64-bit", 64), ("x64", 64)] {
+            let rules = [rule(
+                Column::ARCHITECTURE,
+                Relation::Is,
+                Action::Include,
+                value,
+            )];
+
+            assert_eq!(
+                encode_filter_rules(&rules),
+                rule_list(&[rule_bytes(40088, 0, 1, value, expected)]),
+                "{value:?}"
+            );
+        }
     }
 
     #[test]
