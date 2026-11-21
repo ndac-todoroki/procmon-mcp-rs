@@ -21,11 +21,12 @@ Claude Desktop から「プロセス X を N 秒 Procmon で取得して、何�
 | Procmon の検証 | `WinVerifyTrust` で署名が有効、かつ署名者が Microsoft Corporation であること。`install` / `update` 時と、毎回の起動前に確認 | 公式のハッシュ値は公開されていない。署名は Microsoft がハッシュに署名したものなので、ハッシュ照合より強い |
 | Procmon の更新 | `update` コマンドで明示的に行う。前回の `ETag` を使った条件付き GET で、変更がなければ本体を取得しない（`304 Not Modified`） | バージョン番号を事前に知るにはスクレイピングが必要になるため避ける。取得のたびに通信しない。昇格側でダウンロードしない |
 | フィルター | 最初から PMC を生成する。GUI 既定の除外ルールをテンプレートにし、`DestructiveFilter=1` を設定する | 取得時に絞り込み、ログを小さくするため。`DestructiveFilter=0` だと除外したイベントも PML に書き込まれる |
-| MCP 層 | `serde_json` で JSON-RPC over stdio を自作する（`Value` で扱い、`serde` の derive は使わない） | 同時に処理するのは2〜3件だけで、`std::thread` で足りる。rmcp + tokio は73クレート。serde_json だけなら5クレートで、proc-macro もない |
+| MCP 層 | `serde_json` で JSON-RPC over stdio を自作する（`Value` で扱い、`serde` の derive は使わない） | 同時に処理するのは2〜3件だけで、`std::thread` で足りる。rmcp + tokio は73クレート |
 | MCP のバージョン | 2026-07-28（リクエストごとに `_meta` でバージョンを送る方式）と、2025-11-25 以前（`initialize` で始める方式）の両方に応じる | 仕様の後方互換の節で認められている方式。Claude Desktop がどちらで話すかに依存しないため |
 | 集計結果の言語 | 英語のみ（切り替えなし） | 読むのは Claude で、ユーザーの言語で説明し直すため |
 | 集計結果の形式 | MCP では JSON（`outputSchema` を宣言し、`structuredContent` と、同じ JSON を文字列にした `content` を返す）。CLI の `summarize` は文章で、`--json` で JSON | 数値が曖昧にならず、項目を足しても壊れない。生の値と計算済みの値を両方入れ、各セクションに `top_n` で切る前の件数（`distinct`）を付ける |
-| Windows API | 署名の確認、昇格の判定、ACL の設定と確認、ダウンロード（WinHTTP）は `windows-sys` で行う。unsafe なコードは `src/win/` にまとめる。タスクの登録と起動は `schtasks.exe`（XML で定義） | テキストの解析に頼らず、言語環境の影響も受けない。ACL は読み戻して確認できる。タスクスケジューラは COM で、`windows-sys` では扱えないため外部コマンドにする |
+| Windows API | `windows` クレートで行う（署名の確認、昇格の判定、ACL の設定と確認）。タスクの登録・起動・削除はタスクスケジューラの COM（ITaskService）で、定義は XML の文字列で渡す。unsafe なコードは `src/win/` にまとめる | 当初は `windows-sys` と `schtasks.exe` だったが見直した。実測でバイナリサイズの差は数 KB。`Result` を返す関数、`Owned` によるハンドルの自動解放、エラー型が使え、COM でタスクを直接扱えるので外部プロセスと XML ファイルの書き出しが不要になる。代わりに proc-macro 系（syn など）の依存とビルド時間が増える |
+| HTTP | `nyquest` + `nyquest-backend-winhttp`（WinHTTP を使う。依存は `windows-sys`） | 自前の unsafe な WinHTTP コード（約150行）をなくすため。若いクレート（0.5 / 0.2）で依存も増える（約17クレート、+55KB）点は承知のうえで採用 |
 | EULA の同意 | `install` で Sysinternals のライセンスの URL を示し、y/N で尋ねる。`--accept-eula` で省略できる | `/AcceptEula` はユーザーの代わりに同意することになるため |
 | PML パーサー | procmon-parser のドキュメントに基づいて、必要な部分だけを実装する。実ファイルとの突き合わせは最低限にする | 公式の仕様はない。procmon-parser が事実上の参照実装 |
 | インストーラー | `install` / `uninstall` は最初から CLI で作り、GUI は最後のフェーズで作る | GUI は外側だけ。作ったものをすべて記録し、アンインストールできる設計を先に固める |
