@@ -29,6 +29,9 @@ pub enum CaptureFilterError {
     TooManyOperations { count: usize },
 }
 
+/// Longest accepted condition text, in UTF-16 units (Windows' `MAX_PATH`).
+pub const MAX_TEXT_UNITS: usize = 260;
+
 /// Most operations one capture may include.
 pub const MAX_OPERATIONS: usize = 32;
 
@@ -54,9 +57,6 @@ impl fmt::Display for CaptureFilterError {
 }
 
 impl std::error::Error for CaptureFilterError {}
-
-/// Longest accepted condition text, in UTF-16 units (Windows' `MAX_PATH`).
-pub const MAX_TEXT_UNITS: usize = 260;
 
 /// Builds the configuration for `filter`: the default filter plus its Include rules,
 /// with filtered-out events dropped from the log.
