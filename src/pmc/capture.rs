@@ -153,4 +153,47 @@ mod tests {
         assert_eq!(u32_value(&config, "DestructiveFilter"), 1);
         assert_eq!(u32_value(&config, "Profiling"), 0);
     }
+
+    #[test]
+    fn records_follow_the_order_of_a_gui_export() {
+        let config = capture_configuration(&CaptureFilter::default()).unwrap();
+
+        let names: Vec<&str> = config.records.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Columns",
+                "ColumnCount",
+                "ColumnMap",
+                "DbgHelpPath",
+                "Logfile",
+                "HighlightFG",
+                "HighlightBG",
+                "Theme",
+                "LogFont",
+                "BoookmarkFont",
+                "AdvancedMode",
+                "Autoscroll",
+                "HistoryDepth",
+                "Profiling",
+                "DestructiveFilter",
+                "AlwaysOnTop",
+                "ResolveAddresses",
+                "SourcePath",
+                "SymbolPath",
+                "FilterRules",
+                "HighlightRules",
+                "FlightRecorder",
+                "RingBufferSize",
+                "RingBufferMin",
+            ]
+        );
+    }
+
+    #[test]
+    fn generated_bytes_parse_back_to_the_same_configuration() {
+        let config = capture_configuration(&CaptureFilter::default()).unwrap();
+
+        assert_eq!(crate::pmc::parse(&config.to_bytes()), Ok(config));
+    }
 }
