@@ -12,10 +12,29 @@ pub trait FilterSubject {
 }
 
 /// Whether Procmon would keep an event under `rules`.
+///
+/// Any matching Exclude rule drops the event. Otherwise, for every column that has
+/// Include rules, at least one of that column's Include rules must match.
+/// Text comparisons ignore case; a column the subject lacks matches no rule.
 pub fn is_included<S: FilterSubject + ?Sized>(rules: &[FilterRule], subject: &S) -> bool {
-    !rules
+    let excluded = rules
         .iter()
-        .any(|rule| rule.action == Action::Exclude && matches(rule, subject))
+        .any(|rule| rule.action == Action::Exclude && matches(rule, subject));
+    if excluded {
+        return false;
+    }
+    // (column, any Include rule of that column matched)
+    let mut columns: Vec<(Column, bool)> = Vec::new();
+    for rule in rules.iter().filter(|rule| rule.action == Action::Include) {
+        match columns
+            .iter_mut()
+            .find(|(column, _)| *column == rule.column)
+        {
+            Some((_, matched)) => *matched = *matched || matches(rule, subject),
+            None => columns.push((rule.column, matches(rule, subject))),
+        }
+    }
+    columns.iter().all(|&(_, matched)| matched)
 }
 
 fn matches<S: FilterSubject + ?Sized>(rule: &FilterRule, subject: &S) -> bool {
@@ -105,6 +124,95 @@ mod tests {
             &event(&[(Column::PROCESS_NAME, "Systemd")])
         ));
         assert!(is_included(&rules, &event(&[(Column::PATH, "System")])));
+    }
+
+    fn include(column: Column, relation: Relation, value: &str) -> FilterRule {
+        rule(column, relation, Action::Include, value)
+    }
+
+    #[test]
+    fn with_an_include_rule_only_matching_events_are_included() {
+        let rules = [include(Column::PROCESS_NAME, Relation::Is, "a.exe")];
+
+        assert!(is_included(
+            &rules,
+            &event(&[(Column::PROCESS_NAME, "a.exe")])
+        ));
+        assert!(!is_included(
+            &rules,
+            &event(&[(Column::PROCESS_NAME, "b.exe")])
+        ));
+    }
+
+    #[test]
+    fn include_rules_on_the_same_column_are_alternatives() {
+        let rules = [
+            include(Column::OPERATION, Relation::Is, "ReadFile"),
+            include(Column::OPERATION, Relation::Is, "WriteFile"),
+        ];
+
+        assert!(is_included(
+            &rules,
+            &event(&[(Column::OPERATION, "ReadFile")])
+        ));
+        assert!(is_included(
+            &rules,
+            &event(&[(Column::OPERATION, "WriteFile")])
+        ));
+        assert!(!is_included(
+            &rules,
+            &event(&[(Column::OPERATION, "CloseFile")])
+        ));
+    }
+
+    #[test]
+    fn include_rules_on_different_columns_must_all_be_satisfied() {
+        let rules = [
+            include(Column::PROCESS_NAME, Relation::Is, "a.exe"),
+            include(Column::OPERATION, Relation::Is, "ReadFile"),
+            include(Column::OPERATION, Relation::Is, "WriteFile"),
+        ];
+        let a_read = event(&[
+            (Column::PROCESS_NAME, "a.exe"),
+            (Column::OPERATION, "ReadFile"),
+        ]);
+        let a_close = event(&[
+            (Column::PROCESS_NAME, "a.exe"),
+            (Column::OPERATION, "CloseFile"),
+        ]);
+        let b_read = event(&[
+            (Column::PROCESS_NAME, "b.exe"),
+            (Column::OPERATION, "ReadFile"),
+        ]);
+
+        assert!(is_included(&rules, &a_read));
+        assert!(!is_included(&rules, &a_close));
+        assert!(!is_included(&rules, &b_read));
+    }
+
+    #[test]
+    fn exclude_rule_wins_over_a_matching_include_rule() {
+        let rules = [
+            include(Column::PROCESS_NAME, Relation::Is, "a.exe"),
+            exclude(Column::OPERATION, Relation::BeginsWith, "IRP_MJ_"),
+        ];
+        let event = event(&[
+            (Column::PROCESS_NAME, "a.exe"),
+            (Column::OPERATION, "IRP_MJ_READ"),
+        ]);
+
+        assert!(!is_included(&rules, &event));
+    }
+
+    #[test]
+    fn column_the_subject_lacks_matches_no_rule() {
+        let rules = [include(Column::PATH, Relation::IsNot, "x")];
+        let excludes = [exclude(Column::PATH, Relation::IsNot, "x")];
+        let without_path = event(&[(Column::PROCESS_NAME, "a.exe")]);
+
+        // Not even negated relations: an unknown value is neither equal nor unequal.
+        assert!(!is_included(&rules, &without_path));
+        assert!(is_included(&excludes, &without_path));
     }
 
     #[test]
