@@ -38,7 +38,7 @@ Claude Desktop から「プロセス X を N 秒 Procmon で取得して、何�
 Claude Desktop ──stdio──> procmon-mcp.exe（通常権限、MCP サーバー）
                               │ jobs\request.json を書く（ID と秒数、条件）
                               ▼
-                  schtasks /run ProcmonMcpCapture
+                  タスク ProcmonMcpCapture を起動（COM）
                               ▼
         procmon-mcp.exe runner（最上位の特権）
             ├ request を検証し、PMC を生成（out\<id>\filter.pmc）
@@ -131,7 +131,7 @@ Claude Desktop ──stdio──> procmon-mcp.exe（通常権限、MCP サーバ
 - ネットワークイベントの Path（ホストとポートのテーブルが必要）は未実装。
 - 生成した PMC だけで（GUI で書き出した他のレコードがなくても）`/LoadConfig` が期待どおり効くか。
 - `/LoadConfig` で読み込んだ設定を、Procmon が終了時に HKCU へ保存し、ユーザーの GUI のフィルターを上書きしないか。
-- `schtasks /run` で、昇格タスクが UAC なしで起動するか。
+- 通常権限の MCP サーバーから COM でタスクを起動したとき、UAC なしで昇格して動くか（タスクのセキュリティ記述子でユーザーに実行を許可している）。
 - Procmon の GUI が開いているときの挙動。他のインスタンスを `/Terminate` で止めてよいか。
 - `/OpenLog ... /SaveAs x.csv` が昇格なしで動くか（PML の検証に使う場合）。
 - 他のバージョンの Procmon で作った PML が読めるか。
