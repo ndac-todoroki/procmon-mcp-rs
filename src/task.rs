@@ -1,9 +1,60 @@
 //! The scheduled task that starts the runner elevated, and the `schtasks.exe` calls that
 //! manage it. The Task Scheduler API is COM-only, so the documented XML form is used.
 
+use std::ffi::OsString;
+use std::io;
 use std::path::Path;
+use std::process::Command;
 
 pub const TASK_NAME: &str = "ProcmonMcpCapture";
+
+/// What to ask `schtasks.exe` to do with our task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action<'a> {
+    /// Create or replace the task from an XML file.
+    Register {
+        xml_file: &'a Path,
+    },
+    Run,
+    Delete,
+    Query,
+}
+
+/// Arguments for `schtasks.exe`.
+pub fn schtasks_args(action: Action<'_>) -> Vec<OsString> {
+    let task = ["/TN", TASK_NAME].map(OsString::from);
+    let mut args: Vec<OsString> = match action {
+        Action::Register { .. } => vec!["/Create".into()],
+        Action::Run => vec!["/Run".into()],
+        Action::Delete => vec!["/Delete".into()],
+        Action::Query => vec!["/Query".into()],
+    };
+    args.extend(task);
+    match action {
+        Action::Register { xml_file } => {
+            args.extend(["/XML".into(), xml_file.as_os_str().to_owned(), "/F".into()]);
+        }
+        // Without /F, schtasks asks for confirmation on the console.
+        Action::Delete => args.push("/F".into()),
+        Action::Run | Action::Query => {}
+    }
+    args
+}
+
+/// Runs `schtasks.exe` from System32 (never from PATH) and fails unless it exits 0.
+pub fn schtasks(action: Action<'_>) -> io::Result<()> {
+    let exe = crate::win::system_dir()?.join("schtasks.exe");
+    let output = Command::new(exe).args(schtasks_args(action)).output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    // schtasks writes localized text in the console code page; keep it best effort.
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(io::Error::other(format!(
+        "schtasks {action:?} failed ({}): {detail}",
+        output.status
+    )))
+}
 
 /// Longest a runner may live: the longest capture plus generous setup and shutdown time.
 pub const EXECUTION_TIME_LIMIT: &str = "PT5M";
@@ -131,6 +182,33 @@ mod tests {
             element(&xml, "Command"),
             Some(r"C:\A&amp;B &lt;x&gt;\procmon-mcp.exe")
         );
+    }
+
+    fn args(action: Action<'_>) -> Vec<String> {
+        schtasks_args(action)
+            .into_iter()
+            .map(|a| a.into_string().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn schtasks_arguments_name_our_task_for_every_action() {
+        assert_eq!(
+            args(Action::Register {
+                xml_file: Path::new(r"C:\ProgramData\ProcmonMcp\bin\task.xml")
+            }),
+            [
+                "/Create",
+                "/TN",
+                TASK_NAME,
+                "/XML",
+                r"C:\ProgramData\ProcmonMcp\bin\task.xml",
+                "/F"
+            ]
+        );
+        assert_eq!(args(Action::Run), ["/Run", "/TN", TASK_NAME]);
+        assert_eq!(args(Action::Delete), ["/Delete", "/TN", TASK_NAME, "/F"]);
+        assert_eq!(args(Action::Query), ["/Query", "/TN", TASK_NAME]);
     }
 
     #[test]
