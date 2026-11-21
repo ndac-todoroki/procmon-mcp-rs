@@ -21,7 +21,14 @@ pub enum CaptureFilterError {
     TooLong { field: &'static str },
     /// The text in `field` contains NUL or another control character.
     ControlCharacter { field: &'static str },
+    /// The text in `field` is empty.
+    Empty { field: &'static str },
+    /// More than [`MAX_OPERATIONS`] operations were given.
+    TooManyOperations { count: usize },
 }
+
+/// Most operations one capture may include.
+pub const MAX_OPERATIONS: usize = 32;
 
 /// Longest accepted condition text, in UTF-16 units (Windows' `MAX_PATH`).
 pub const MAX_TEXT_UNITS: usize = 260;
@@ -74,6 +81,11 @@ pub fn capture_configuration(filter: &CaptureFilter) -> Result<Configuration, Ca
 /// The configuration is consumed by an elevated Procmon, so only plain, bounded text
 /// reaches it.
 fn validate(filter: &CaptureFilter) -> Result<(), CaptureFilterError> {
+    if filter.operations.len() > MAX_OPERATIONS {
+        return Err(CaptureFilterError::TooManyOperations {
+            count: filter.operations.len(),
+        });
+    }
     let texts = [
         ("process_name", filter.process_name.as_slice()),
         ("operations", filter.operations.as_slice()),
@@ -82,6 +94,9 @@ fn validate(filter: &CaptureFilter) -> Result<(), CaptureFilterError> {
     ];
     for (field, values) in texts {
         for value in values {
+            if value.is_empty() {
+                return Err(CaptureFilterError::Empty { field });
+            }
             if value.encode_utf16().count() > MAX_TEXT_UNITS {
                 return Err(CaptureFilterError::TooLong { field });
             }
@@ -303,6 +318,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn empty_text_is_rejected() {
+        // An empty "path contains" would match everything, an empty "is" nothing:
+        // either way the caller most likely made a mistake.
+        for field in TEXT_FIELDS {
+            assert_eq!(
+                capture_configuration(&filter_with(field, "")).err(),
+                Some(CaptureFilterError::Empty { field })
+            );
+        }
+    }
+
+    #[test]
+    fn up_to_32_operations_are_accepted_and_more_are_rejected() {
+        let operations = |count: usize| CaptureFilter {
+            operations: (0..count).map(|i| format!("Op{i}")).collect(),
+            ..CaptureFilter::default()
+        };
+
+        assert!(capture_configuration(&operations(32)).is_ok());
+        assert_eq!(
+            capture_configuration(&operations(33)).err(),
+            Some(CaptureFilterError::TooManyOperations { count: 33 })
+        );
     }
 
     #[test]
