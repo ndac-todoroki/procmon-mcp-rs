@@ -4,7 +4,7 @@
 //! `u8 1, u32 count`, then per rule `u32 column, u32 relation, u8 action,
 //! u32 value_bytes, UTF-16LE value with NUL, u32 int_value, u32 reserved`.
 
-use super::record::{PmcError, decode_utf16z};
+use super::record::{PmcError, decode_utf16z, encode_utf16z};
 
 /// Event column a rule tests. Kept as the raw number so unknown columns round-trip.
 ///
@@ -131,6 +131,30 @@ pub fn decode_filter_rules(data: &[u8]) -> Result<Vec<FilterRule>, PmcError> {
     Ok(rules)
 }
 
+/// Encodes rules as the data of a `FilterRules` record.
+///
+/// # Panics
+/// If there are 2^32 or more rules or a value is 4 GiB or larger.
+pub fn encode_filter_rules(rules: &[FilterRule]) -> Vec<u8> {
+    let mut out = vec![RULES_MARKER];
+    out.extend_from_slice(&size_u32(rules.len()).to_le_bytes());
+    for rule in rules {
+        let value = encode_utf16z(&rule.value);
+        out.extend_from_slice(&rule.column.0.to_le_bytes());
+        out.extend_from_slice(&(rule.relation as u32).to_le_bytes());
+        out.push(rule.action as u8);
+        out.extend_from_slice(&size_u32(value.len()).to_le_bytes());
+        out.extend_from_slice(&value);
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+    }
+    out
+}
+
+fn size_u32(size: usize) -> u32 {
+    u32::try_from(size).expect("FilterRules data must be smaller than 4 GiB")
+}
+
 /// Constant first byte of the rule list (procmon-parser: `Const(1, Int8ul)`, meaning unknown).
 const RULES_MARKER: u8 = 1;
 
@@ -212,6 +236,46 @@ mod tests {
                 value: "Procmon.exe".to_string(),
             }])
         );
+    }
+
+    fn rule(column: Column, relation: Relation, action: Action, value: &str) -> FilterRule {
+        FilterRule {
+            column,
+            relation,
+            action,
+            value: value.to_string(),
+        }
+    }
+
+    #[test]
+    fn encoding_writes_the_marker_count_and_each_rule() {
+        let rules = [
+            rule(
+                Column::PROCESS_NAME,
+                Relation::Is,
+                Action::Exclude,
+                "System",
+            ),
+            rule(Column::PATH, Relation::Contains, Action::Include, "$Extend"),
+        ];
+
+        assert_eq!(
+            encode_filter_rules(&rules),
+            rule_list(&[
+                rule_bytes(40053, 0, 0, "System", 0),
+                rule_bytes(40071, 6, 1, "$Extend", 0),
+            ])
+        );
+    }
+
+    #[test]
+    fn unknown_column_round_trips() {
+        let data = rule_list(&[rule_bytes(49999, 0, 1, "x", 0)]);
+
+        let rules = decode_filter_rules(&data).unwrap();
+
+        assert_eq!(rules[0].column, Column(49999));
+        assert_eq!(encode_filter_rules(&rules), data);
     }
 
     #[test]
