@@ -3,6 +3,7 @@
 pub mod analysis;
 pub mod capture;
 pub mod cli;
+pub mod download;
 pub mod event_filter;
 pub mod install;
 pub mod job;

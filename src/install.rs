@@ -7,9 +7,10 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
+use crate::download::{self, Endpoint, Fetch};
 use crate::layout::{self, Layout};
 use crate::task::{self, Action};
-use crate::win::{self, Endpoint, Fetch};
+use crate::win;
 
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
@@ -180,7 +181,7 @@ fn update_procmon(layout: &Layout) -> Result<UpdateOutcome, String> {
     let installed_ok = win::verify_microsoft_signature(&layout.procmon()).is_ok();
     let etag = state.procmon_etag.as_deref().filter(|_| installed_ok);
     let path = procmon_download_path(std::env::consts::ARCH);
-    let fetched = win::http_get(
+    let fetched = download::get(
         &Endpoint::https(SYSINTERNALS_LIVE),
         path,
         etag,
