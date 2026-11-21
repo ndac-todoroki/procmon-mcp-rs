@@ -3,3 +3,4 @@
 pub mod analysis;
 pub mod pmc;
 pub mod pml;
+pub mod report;

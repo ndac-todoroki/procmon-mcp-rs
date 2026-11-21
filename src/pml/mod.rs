@@ -9,10 +9,12 @@ mod error;
 mod event;
 mod header;
 mod reader;
+mod status;
 mod tables;
 
 pub use error::PmlError;
 pub use event::{Detail, Event, EventClass};
 pub use header::Header;
 pub use reader::PmlReader;
+pub use status::status_name;
 pub use tables::Process;
