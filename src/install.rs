@@ -336,6 +336,62 @@ fn copy_running_to(target: &Path) -> Result<(), String> {
     replace_with(&tmp, target)
 }
 
+/// Deletes `root` and everything in it. A file that cannot be deleted because it is
+/// running (the uninstaller itself, or a server Claude Desktop still runs) is moved into
+/// `graveyard` instead; the moved paths are returned so they can be deleted at reboot.
+///
+/// Links are removed, never followed, like `remove_dir_all` does.
+fn remove_tree(root: &Path, graveyard: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut retired = Vec::new();
+    remove_tree_into(root, graveyard, &mut retired)?;
+    Ok(retired)
+}
+
+fn remove_tree_into(
+    dir: &Path,
+    graveyard: &Path,
+    retired: &mut Vec<std::path::PathBuf>,
+) -> Result<(), String> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("cannot list {}: {e}", dir.display()))?
+            .path();
+        let meta = std::fs::symlink_metadata(&path)
+            .map_err(|e| format!("cannot inspect {}: {e}", path.display()))?;
+        let is_link = meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+        if meta.is_dir() && !is_link {
+            remove_tree_into(&path, graveyard, retired)?;
+        } else if meta.is_dir() {
+            std::fs::remove_dir(&path)
+                .map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
+        } else if std::fs::remove_file(&path).is_err() {
+            retired.push(retire(&path, graveyard)?);
+        }
+    }
+    std::fs::remove_dir(dir).map_err(|e| format!("cannot remove {}: {e}", dir.display()))
+}
+
+/// Moves a file that is in use out of the way. Running images can be renamed, not deleted.
+fn retire(path: &Path, graveyard: &Path) -> Result<std::path::PathBuf, String> {
+    let mut id = [0u8; 8];
+    win::random_bytes(&mut id).map_err(|e| format!("cannot pick a name: {e}"))?;
+    let name = format!(
+        "procmon-mcp-{}-{}",
+        id.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        path.file_name().unwrap_or_default().to_string_lossy()
+    );
+    let target = graveyard.join(name);
+    std::fs::rename(path, &target).map_err(|e| {
+        format!(
+            "cannot remove {}, which is in use (quit Claude Desktop and try again): {e}",
+            path.display()
+        )
+    })?;
+    Ok(target)
+}
+
 /// Writes a program the setup carries, replacing `target` only once it is complete.
 fn write_program(target: &Path, bytes: &[u8]) -> Result<(), String> {
     if bytes.is_empty() {
@@ -554,6 +610,49 @@ mod tests {
         let err = write_program(&target, b"").unwrap_err();
         assert!(err.contains("built without"), "{err}");
         assert_eq!(std::fs::read(&target).unwrap(), b"old");
+    }
+
+    #[test]
+    fn remove_tree_deletes_nested_files_and_folders() {
+        let dir = TempDir::new("tree");
+        let root = dir.0.join("ProcmonMcp");
+        std::fs::create_dir_all(root.join(r"out\job")).unwrap();
+        std::fs::write(root.join(r"out\job\capture.pml"), b"x").unwrap();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join(r"bin\state.json"), b"{}").unwrap();
+        let graveyard = dir.0.join("graveyard");
+        std::fs::create_dir(&graveyard).unwrap();
+
+        let retired = remove_tree(&root, &graveyard).unwrap();
+        assert!(retired.is_empty());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn remove_tree_moves_a_running_program_aside_instead_of_failing() {
+        let dir = TempDir::new("running");
+        let root = dir.0.join("ProcmonMcp");
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let exe = root.join(r"bin\procmon-mcp.exe");
+        // A running image cannot be deleted, only renamed: like Claude Desktop running
+        // the server, or the uninstaller running from bin.
+        std::fs::copy(win::system_dir().unwrap().join("ping.exe"), &exe).unwrap();
+        let mut child = std::process::Command::new(&exe)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let graveyard = dir.0.join("graveyard");
+        std::fs::create_dir(&graveyard).unwrap();
+
+        let result = remove_tree(&root, &graveyard);
+        let _ = child.kill();
+        let _ = child.wait();
+        let retired = result.unwrap();
+        assert!(!root.exists());
+        assert_eq!(retired.len(), 1);
+        assert!(retired[0].starts_with(&graveyard), "{retired:?}");
+        assert!(retired[0].is_file());
     }
 
     #[test]
