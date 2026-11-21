@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use procmon_mcp::analysis::summarize_file;
 use procmon_mcp::cli::{Command, USAGE, parse_args};
+use procmon_mcp::install::{InstallOptions, UpdateOutcome};
 use procmon_mcp::report::{render, to_json};
 
 fn main() -> ExitCode {
@@ -33,6 +34,16 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Install { accept_eula } => {
+            report(procmon_mcp::install::install(&InstallOptions {
+                accept_eula,
+            }))
+        }
+        Command::Update => report(procmon_mcp::install::update().map(|outcome| match outcome {
+            UpdateOutcome::Updated => eprintln!("Process Monitor was updated."),
+            UpdateOutcome::UpToDate => eprintln!("Process Monitor is up to date."),
+        })),
+        Command::Uninstall => report(procmon_mcp::install::uninstall()),
         Command::Summarize {
             path,
             filter,
@@ -52,5 +63,15 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+    }
+}
+
+fn report(result: Result<(), String>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("procmon-mcp: {message}");
+            ExitCode::FAILURE
+        }
     }
 }

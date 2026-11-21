@@ -8,10 +8,13 @@ pub const DEFAULT_TOP_N: usize = 15;
 
 pub const USAGE: &str = "\
 Usage:
+  procmon-mcp install [--accept-eula]      set up captures (run as administrator)
+  procmon-mcp update                       get a newer Process Monitor, if any (administrator)
+  procmon-mcp uninstall                    remove everything install set up (administrator)
   procmon-mcp mcp                          run the MCP server on stdin/stdout
   procmon-mcp summarize <file.pml> [options]
 
-Options:
+Summarize options:
   --process <name>        only events of this process image name
   --pid <pid>             only events of this process ID
   --operation <name>      only this operation (repeatable)
@@ -26,6 +29,12 @@ pub enum Command {
     Mcp,
     /// Run the pending capture elevated; started by the scheduled task only.
     Runner,
+    /// Set up ProgramData\ProcmonMcp, Process Monitor and the scheduled task (elevated).
+    Install { accept_eula: bool },
+    /// Download Process Monitor again if Sysinternals has a newer one (elevated).
+    Update,
+    /// Remove everything install set up (elevated).
+    Uninstall,
     Summarize {
         path: PathBuf,
         filter: Filter,
@@ -42,6 +51,16 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
         Some((cmd, [])) if cmd == "runner" => Ok(Command::Runner),
         Some((cmd, _)) if cmd == "runner" => Err("runner takes no arguments".to_owned()),
         Some((cmd, _)) if cmd == "mcp" => Err("mcp takes no arguments".to_owned()),
+        Some((cmd, rest)) if cmd == "install" => match rest {
+            [] => Ok(Command::Install { accept_eula: false }),
+            [flag] if flag == "--accept-eula" => Ok(Command::Install { accept_eula: true }),
+            _ => Err("install accepts only --accept-eula".to_owned()),
+        },
+        Some((cmd, [])) if cmd == "update" => Ok(Command::Update),
+        Some((cmd, [])) if cmd == "uninstall" => Ok(Command::Uninstall),
+        Some((cmd, _)) if cmd == "update" || cmd == "uninstall" => {
+            Err(format!("{cmd} takes no arguments"))
+        }
         Some((cmd, rest)) if cmd == "summarize" => parse_summarize(rest),
         Some((cmd, _)) => Err(format!("unknown command: {cmd}")),
         None => Err("missing command".to_owned()),
@@ -145,6 +164,20 @@ mod tests {
     }
 
     #[test]
+    fn setup_commands_parse() {
+        assert_eq!(
+            parse_args(&args("install")),
+            Ok(Command::Install { accept_eula: false })
+        );
+        assert_eq!(
+            parse_args(&args("install --accept-eula")),
+            Ok(Command::Install { accept_eula: true })
+        );
+        assert_eq!(parse_args(&args("update")), Ok(Command::Update));
+        assert_eq!(parse_args(&args("uninstall")), Ok(Command::Uninstall));
+    }
+
+    #[test]
     fn runner_runs_the_pending_capture() {
         assert_eq!(parse_args(&args("runner")), Ok(Command::Runner));
     }
@@ -161,6 +194,9 @@ mod tests {
             "frobnicate",
             "mcp --verbose",
             "runner now",
+            "install --yes",
+            "update now",
+            "uninstall --force",
             "summarize",
             "summarize a.pml b.pml",
             "summarize a.pml --pid",
