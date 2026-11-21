@@ -58,12 +58,20 @@ pub type Ranking = Vec<(String, u64)>;
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
     pub total: u64,
+    /// FILETIME of the first and last matching event.
+    pub first_timestamp: Option<u64>,
+    pub last_timestamp: Option<u64>,
+    pub by_process: Ranking,
     pub by_operation: Ranking,
 }
 
+#[derive(Default)]
 pub struct Summarizer {
     filter: Filter,
     total: u64,
+    first_timestamp: Option<u64>,
+    last_timestamp: Option<u64>,
+    by_process: HashMap<String, u64>,
     by_operation: HashMap<&'static str, u64>,
 }
 
@@ -71,8 +79,7 @@ impl Summarizer {
     pub fn new(filter: Filter) -> Self {
         Summarizer {
             filter: filter.lowercased(),
-            total: 0,
-            by_operation: HashMap::new(),
+            ..Summarizer::default()
         }
     }
 
@@ -83,13 +90,22 @@ impl Summarizer {
             return;
         }
         self.total += 1;
+        self.first_timestamp.get_or_insert(event.timestamp);
+        self.last_timestamp = Some(event.timestamp);
+        let process_key = match process {
+            Some(p) => format!("{} (PID {})", p.name, p.pid),
+            None => "<unknown process>".to_owned(),
+        };
+        *self.by_process.entry(process_key).or_default() += 1;
         *self.by_operation.entry(event.operation_name()).or_default() += 1;
     }
 
     pub fn finish(self) -> Summary {
-        let _ = self.filter;
         Summary {
             total: self.total,
+            first_timestamp: self.first_timestamp,
+            last_timestamp: self.last_timestamp,
+            by_process: rank(self.by_process),
             by_operation: rank(self.by_operation),
         }
     }
@@ -236,5 +252,29 @@ mod tests {
             ..Filter::default()
         };
         assert_eq!(summarize(filter, &mixed_events()).total, 1);
+    }
+
+    #[test]
+    fn records_time_span_of_matching_events_only() {
+        let filter = Filter {
+            pid: Some(10),
+            ..Filter::default()
+        };
+        let s = summarize(filter, &mixed_events());
+        assert_eq!((s.first_timestamp, s.last_timestamp), (Some(0), Some(1)));
+        assert_eq!(Summary::default().first_timestamp, None);
+    }
+
+    #[test]
+    fn ranks_processes_by_name_and_pid() {
+        let s = summarize(Filter::default(), &mixed_events());
+        assert_eq!(
+            s.by_process,
+            [
+                ("App.exe (PID 10)".to_owned(), 2),
+                ("App.exe (PID 11)".to_owned(), 1),
+                ("other.exe (PID 20)".to_owned(), 1),
+            ]
+        );
     }
 }
