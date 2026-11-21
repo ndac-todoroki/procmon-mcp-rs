@@ -4,20 +4,206 @@
 
 An MCP server that lets Claude (or any MCP client) run
 [Sysinternals Process Monitor](https://learn.microsoft.com/sysinternals/downloads/procmon)
-for a few seconds and summarize what a process is doing: which files it reads and writes,
-how often, how much, and which operations fail.
+for a few seconds and summarize what a process is doing: which files and registry keys it
+touches, how often, how much it reads and writes, which files it reopens periodically, and
+which operations fail.
 
-> **Status:** work in progress. See [docs/PLAN.md](docs/PLAN.md) (Japanese) for the design.
+> "Capture HuionTablet.exe with Procmon for 15 seconds and tell me what it's doing."
+>
+> → *It rereads `C:\Program Files\HuionTablet\res\user.cfg` every ~312 ms (about 14.6 MiB/s),
+> and each time also tries to open a nonexistent `.cfg`, which fails with NAME NOT FOUND.*
 
-## Features (planned)
+> **Status:** early. Tested on Windows 11 with Process Monitor 4.13. The design and its
+> rationale are in [docs/PLAN.md](docs/PLAN.md) (Japanese).
 
-- `capture`: run Process Monitor with a filter built per call (process, PID, operation,
-  path, result, duration) and return a summary. Logs are temporary and deleted afterwards.
-- `summarize_log`: re-summarize a saved `.pml` file with different conditions.
-- A single Rust executable with a small dependency tree. The MCP server runs with normal
-  privileges; only Process Monitor is started elevated, through a scheduled task.
-- Process Monitor itself is not bundled. It is downloaded from Sysinternals Live and its
-  Authenticode signature is verified before every use.
+## Features
+
+- **`capture`**: runs Process Monitor for 1–120 seconds with conditions you give (process
+  name, PID, operations, path substring, result) and returns a structured summary. The
+  conditions are applied by Process Monitor itself, so only matching events are recorded.
+  The log is deleted afterwards unless you ask to keep it.
+- **`summarize_log`**: summarizes a saved `.pml` file, optionally narrowed by process, PID,
+  operation or path.
+- **One executable, no runtime**: a single Rust binary, no Python, no .NET, no async
+  runtime, no bundled HTTP or TLS stack (downloads go through Windows' WinHTTP).
+- **Least privilege**: the MCP server runs with normal rights. Only Process Monitor is
+  started with administrator rights, through a scheduled task set up once by `install`.
+- **Process Monitor is not bundled**: `install` downloads it from Sysinternals Live, and
+  its Microsoft signature is verified at install time and before every capture.
+- **Your Process Monitor settings stay yours**: Process Monitor saves the configuration it
+  ran with into your GUI settings; procmon-mcp restores them after each capture.
+
+## Requirements
+
+- Windows 10 or 11 (x64 or ARM64)
+- Administrator rights once, to run `install`
+- An MCP client such as Claude Desktop
+
+## Installation
+
+1. Build (or download) `procmon-mcp.exe`:
+
+   ```powershell
+   cargo build --release
+   ```
+
+2. From an **administrator** terminal, run:
+
+   ```powershell
+   .\target\release\procmon-mcp.exe install
+   ```
+
+   Before asking for consent, `install` lists everything it will do:
+
+   - create `C:\ProgramData\ProcmonMcp` (`bin`, `jobs`, `out`), writable only by
+     administrators, except that you may add requests to `jobs` and read or delete
+     results in `out`
+   - copy itself to `C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe`
+   - download `https://live.sysinternals.com/Procmon64.exe` (`Procmon64a.exe` on ARM64)
+     to `C:\ProgramData\ProcmonMcp\bin\`, keeping it only if its Microsoft signature is
+     valid
+   - register the scheduled task `ProcmonMcpCapture`, which runs a capture with
+     administrator rights when asked
+
+   Process Monitor is started with `/AcceptEula`, which accepts the
+   [Sysinternals Software License Terms](https://learn.microsoft.com/sysinternals/license-terms)
+   on your behalf; `install` asks you to accept them (`--accept-eula` skips the question).
+
+3. Add the server to Claude Desktop's `claude_desktop_config.json`
+   (Settings → Developer → Edit Config) and restart Claude Desktop:
+
+   ```json
+   {
+     "mcpServers": {
+       "procmon": {
+         "command": "C:\\ProgramData\\ProcmonMcp\\bin\\procmon-mcp.exe",
+         "args": ["mcp"]
+       }
+     }
+   }
+   ```
+
+Running `install` again repairs or refreshes an installation. Quit Claude Desktop first,
+since it keeps `procmon-mcp.exe` in use.
+
+## Tools
+
+### `capture`
+
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `duration_s` | integer, 1–120 | 10 | Seconds to capture |
+| `process_name` | string | | Image name, e.g. `HuionTablet.exe` |
+| `pid` | integer | | Process ID |
+| `operations` | string[] | | Operations, e.g. `["ReadFile", "RegSetValue"]` |
+| `path_contains` | string | | Case-insensitive substring of the path |
+| `result` | string | | Result, e.g. `NAME NOT FOUND` |
+| `top_n` | integer, 1–50 | 15 | Entries per section |
+| `keep_log` | boolean | false | Keep the `.pml` and return its path |
+
+Narrow the capture whenever you can: without conditions Process Monitor records the whole
+system, which easily reaches hundreds of MB in a few seconds.
+
+Only one Process Monitor can capture at a time. If Process Monitor is already open, the
+tool returns an error asking you to close it; it never closes it for you.
+
+### `summarize_log`
+
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `pml_path` | string | (required) | A `.pml` file; other files are refused |
+| `process_name`, `pid`, `operations`, `path_contains` | | | As for `capture` |
+| `top_n` | integer, 1–50 | 15 | Entries per section |
+
+### Output
+
+Both tools return JSON (declared as the tool's `outputSchema`):
+
+- event count, duration and events per second
+- event counts per process and per operation
+- the most frequent operation and path pairs, with bytes and MiB/s for `ReadFile` and
+  `WriteFile`
+- files opened 5 or more times by the same process, with the mean, minimum and maximum
+  interval in ms
+- failed operations with their NTSTATUS (`END OF FILE` is not counted as a failure)
+
+Each list also gives how many distinct entries existed before it was cut to `top_n`.
+
+## Command line
+
+```text
+procmon-mcp install [--accept-eula]   set up captures (administrator)
+procmon-mcp update                    get a newer Process Monitor, if any (administrator)
+procmon-mcp uninstall                 remove everything install set up (administrator)
+procmon-mcp mcp                       run the MCP server on stdin/stdout
+procmon-mcp summarize <file.pml> [--process <name>] [--pid <pid>] [--operation <name>]...
+                                 [--path-contains <text>] [--top <n>] [--json]
+```
+
+`update` asks Sysinternals only whether `Procmon64.exe` changed (a conditional request);
+nothing is downloaded when it has not. `summarize` prints the same summary as text, or as
+the MCP JSON with `--json`.
+
+## How it works
+
+```text
+Claude Desktop ──stdio──> procmon-mcp.exe mcp        (normal rights)
+                            │ writes jobs\request.json, starts the task (COM)
+                            ▼
+                 scheduled task ProcmonMcpCapture
+                            ▼
+                 procmon-mcp.exe runner             (elevated)
+                   ├ checks directory permissions and Procmon's signature
+                   ├ validates the request, writes the filter (.pmc)
+                   ├ saves your Process Monitor settings
+                   ├ Procmon64.exe /Quiet /BackingFile out\<id>\capture.pml /LoadConfig … /Runtime N
+                   └ restores your settings, writes out\<id>\status.json
+                            ▼
+                 procmon-mcp.exe mcp reads the log, summarizes it, deletes it
+```
+
+Security notes:
+
+- The elevated runner only ever starts the `Procmon64.exe` in the administrator-only
+  `bin`, and only if it is signed by Microsoft.
+- It refuses to run if any directory's owner or permissions differ from what `install`
+  set.
+- It reads one small request file from `jobs`, which accepts only a hex ID, a duration of
+  1–120 s and bounded filter text.
+- It writes only to `out`, where you can read and delete but not create files, so nothing
+  can be planted to redirect its writes.
+- System folders come from Windows APIs, not from environment variables.
+
+## Uninstall
+
+From an administrator terminal (quit Claude Desktop first):
+
+```powershell
+C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe uninstall
+```
+
+This removes the scheduled task and `C:\ProgramData\ProcmonMcp`. Remove the `procmon`
+entry from Claude Desktop's configuration as well.
+
+## Limitations
+
+- Reads PML format version 9, written by current Process Monitor releases (tested with
+  4.13); other versions are refused with an explicit error.
+- Network events are counted but their path (addresses and ports) is not decoded yet.
+- A capture takes about 7 seconds longer than requested (task start, driver setup,
+  writing the log).
+
+## Development
+
+```powershell
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo deny check
+```
+
+Some tests compare against real logs and binaries in the git-ignored `reference/`
+directory and are skipped when the files are absent. The development workflow is
+described in [CLAUDE.md](CLAUDE.md) and [docs/PLAN.md](docs/PLAN.md) (Japanese).
 
 ## Acknowledgements
 
