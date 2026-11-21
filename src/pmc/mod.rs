@@ -6,5 +6,5 @@
 mod filter;
 mod record;
 
-pub use filter::{FilterRule, decode_filter_rules};
+pub use filter::{Action, Column, FilterRule, Relation, decode_filter_rules};
 pub use record::{Configuration, PmcError, Record, parse};
