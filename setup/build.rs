@@ -8,8 +8,13 @@ use std::path::PathBuf;
 
 fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    // OUT_DIR is <target>/<profile>/build/<package>-<hash>/out.
-    let profile_dir = out.ancestors().nth(3).unwrap().to_path_buf();
+    // OUT_DIR lies under <target>/<profile>/build/ (how deep depends on the Cargo version).
+    let profile_dir = out
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name == "build"))
+        .and_then(|build| build.parent())
+        .expect("OUT_DIR is inside the profile's build directory")
+        .to_path_buf();
     let server = profile_dir.join("procmon-mcp.exe");
     let embedded = out.join("procmon-mcp.exe");
     println!("cargo:rerun-if-changed={}", server.display());
