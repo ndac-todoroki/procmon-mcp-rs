@@ -25,6 +25,8 @@ Claude Desktop から「プロセス X を N 秒 Procmon で取得して、何�
 | MCP のバージョン | 2026-07-28（リクエストごとに `_meta` でバージョンを送る方式）と、2025-11-25 以前（`initialize` で始める方式）の両方に応じる | 仕様の後方互換の節で認められている方式。Claude Desktop がどちらで話すかに依存しないため |
 | 集計結果の言語 | 英語のみ（切り替えなし） | 読むのは Claude で、ユーザーの言語で説明し直すため |
 | 集計結果の形式 | MCP では JSON（`outputSchema` を宣言し、`structuredContent` と、同じ JSON を文字列にした `content` を返す）。CLI の `summarize` は文章で、`--json` で JSON | 数値が曖昧にならず、項目を足しても壊れない。生の値と計算済みの値を両方入れ、各セクションに `top_n` で切る前の件数（`distinct`）を付ける |
+| Windows API | 署名の確認、昇格の判定、ACL の設定と確認、ダウンロード（WinHTTP）は `windows-sys` で行う。unsafe なコードは `src/win/` にまとめる。タスクの登録と起動は `schtasks.exe`（XML で定義） | テキストの解析に頼らず、言語環境の影響も受けない。ACL は読み戻して確認できる。タスクスケジューラは COM で、`windows-sys` では扱えないため外部コマンドにする |
+| EULA の同意 | `install` で Sysinternals のライセンスの URL を示し、y/N で尋ねる。`--accept-eula` で省略できる | `/AcceptEula` はユーザーの代わりに同意することになるため |
 | PML パーサー | procmon-parser のドキュメントに基づいて、必要な部分だけを実装する。実ファイルとの突き合わせは最低限にする | 公式の仕様はない。procmon-parser が事実上の参照実装 |
 | インストーラー | `install` / `uninstall` は最初から CLI で作り、GUI は最後のフェーズで作る | GUI は外側だけ。作ったものをすべて記録し、アンインストールできる設計を先に固める |
 | ライセンス | MIT | procmon-parser（MIT, Copyright (c) 2020 Ely Ronnen）に合わせる |
