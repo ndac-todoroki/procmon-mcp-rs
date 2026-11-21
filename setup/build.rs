@@ -23,9 +23,7 @@ fn main() {
         Err(_) => {
             // Lets `cargo clippy` and `cargo test` work on a fresh checkout. The setup
             // refuses to install from an empty payload.
-            println!(
-                "cargo:warning=procmon-mcp.exe not built yet; embedding an empty payload"
-            );
+            println!("cargo:warning=procmon-mcp.exe not built yet; embedding an empty payload");
             std::fs::write(&embedded, []).unwrap();
         }
     }

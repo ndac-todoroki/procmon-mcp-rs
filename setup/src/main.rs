@@ -2,5 +2,6 @@
 //! procmon-mcp-setup: installs procmon-mcp with a walkthrough, and uninstalls it.
 
 mod text;
+mod wizard;
 
 fn main() {}
