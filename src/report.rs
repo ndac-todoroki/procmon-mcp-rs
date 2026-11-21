@@ -5,7 +5,7 @@ use std::fmt::Write;
 use serde_json::{Value, json};
 
 use crate::analysis::Summary;
-use crate::pml::status_name;
+use crate::pml::result_text;
 
 const MIB: f64 = 1024.0 * 1024.0;
 
@@ -119,7 +119,7 @@ pub fn to_json(summary: &Summary, top_n: usize) -> Value {
                 "operation": f.operation,
                 "path": f.path,
                 "count": f.count,
-                "status": status_text(f.result),
+                "status": result_text(f.result),
                 "code": format!("0x{:08X}", f.result),
             })
         }).collect()),
@@ -129,13 +129,6 @@ pub fn to_json(summary: &Summary, top_n: usize) -> Value {
 fn round(x: f64, decimals: i32) -> f64 {
     let scale = 10f64.powi(decimals);
     (x * scale).round() / scale
-}
-
-/// The Result column text: the NTSTATUS name, or its hex code when we do not know it.
-fn status_text(code: u32) -> String {
-    status_name(code)
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("0x{code:08X}"))
 }
 
 /// Renders at most `top_n` entries per section.
@@ -198,7 +191,7 @@ pub fn render(summary: &Summary, top_n: usize) -> String {
                 "- {} x {} {} {}",
                 f.count,
                 f.operation,
-                status_text(f.result),
+                result_text(f.result),
                 f.path
             );
         }

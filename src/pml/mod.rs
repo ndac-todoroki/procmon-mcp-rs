@@ -16,5 +16,5 @@ pub use error::PmlError;
 pub use event::{Detail, Event, EventClass};
 pub use header::Header;
 pub use reader::PmlReader;
-pub use status::status_name;
+pub use status::{result_text, status_name};
 pub use tables::Process;

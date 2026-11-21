@@ -25,3 +25,10 @@ pub fn status_name(code: u32) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// The Result column text: the NTSTATUS name, or its hex code when we do not know it.
+pub fn result_text(code: u32) -> String {
+    status_name(code)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("0x{code:08X}"))
+}
