@@ -85,7 +85,7 @@ Claude Desktop ──stdio──> procmon-mcp.exe（通常権限、MCP サーバ
 | 2 | MCP 層（自作）と `summarize_log` ツール | JSON の入出力の単体テストと、Claude Desktop からの呼び出し |
 | 3 | PMC の読み書き、既定テンプレート、条件からのルール生成 | `ProcmonConfiguration.pmc` の読み込みと書き戻しでバイト一致。フィルター適用結果の照合（下記） |
 | 4 | `install` / `uninstall` / `update` / `runner`、ダウンロードと署名確認、`capture` ツール | 実機で確認（管理者権限の操作は事前に了承を得る） |
-| 5 | GUI のインストーラー（WinUI 3、決定事項を参照）。Claude Desktop への登録は、完了画面で設定の JSON をコピーするボタンにする | プロトタイプで見た目を確認したうえで実装する |
+| 5 | GUI のインストーラー（WinUI 3、決定事項を参照）。Claude Desktop への登録は、完了画面で設定の JSON をコピーするボタンにする | 画面は自動操作で確認済み。UAC を伴うインストールとアンインストールは実機で確認する |
 
 開発は TDD（t-wada 氏のプラクティス）で進め、commit-as-you-go を守る。
 

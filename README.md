@@ -36,10 +36,24 @@ which operations fail.
 ## Requirements
 
 - Windows 10 or 11 (x64 or ARM64)
-- Administrator rights once, to run `install`
+- Signed in as an administrator, to install (once)
 - An MCP client such as Claude Desktop
+- For the graphical setup: the
+  [Windows App Runtime 2.x](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads)
 
 ## Installation
+
+### With the setup
+
+Run `procmon-mcp-setup.exe` and follow the walkthrough. It explains what it will change,
+asks you to accept the Sysinternals license, and asks for administrator permission only
+when you select **Install**. The last page has a button that copies the Claude Desktop
+settings. The setup keeps a copy of itself, so procmon-mcp can be removed from
+**Settings → Apps → Installed apps**.
+
+The setup needs the Windows App Runtime 2.x (see Requirements); the MCP server does not.
+
+### From the command line
 
 1. Build (or download) `procmon-mcp.exe`:
 
@@ -83,8 +97,11 @@ which operations fail.
    }
    ```
 
-Running `install` again repairs or refreshes an installation. Quit Claude Desktop first,
-since it keeps `procmon-mcp.exe` in use.
+Running the setup or `install` again repairs or refreshes an installation. Quit Claude
+Desktop first, since it keeps `procmon-mcp.exe` in use.
+
+Only an administrator who is signed in can install: the capture task runs as that user
+with their administrator rights. Elevating with another account's credentials is refused.
 
 ## Tools
 
@@ -176,14 +193,16 @@ Security notes:
 
 ## Uninstall
 
-From an administrator terminal (quit Claude Desktop first):
+Use **Settings → Apps → Installed apps → procmon-mcp → Uninstall**, or, from an
+administrator terminal:
 
 ```powershell
 C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe uninstall
 ```
 
-This removes the scheduled task and `C:\ProgramData\ProcmonMcp`. Remove the `procmon`
-entry from Claude Desktop's configuration as well.
+Either removes the scheduled task, the Installed apps entry and `C:\ProgramData\ProcmonMcp`.
+Quit Claude Desktop first; programs still running are moved aside and deleted when Windows
+restarts. Remove the `procmon` entry from Claude Desktop's configuration as well.
 
 ## Limitations
 
@@ -195,11 +214,23 @@ entry from Claude Desktop's configuration as well.
 
 ## Development
 
+The repository is a workspace: the server (`procmon-mcp`, the root package) and the
+graphical setup (`setup/`, `procmon-mcp-setup`), which embeds the server. Build them in
+this order:
+
 ```powershell
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo deny check
+cargo build --release                        # target\release\procmon-mcp.exe
+cargo build --release -p procmon-mcp-setup   # target\release\procmon-mcp-setup.exe
 ```
+
+```powershell
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo deny --workspace check
+```
+
+The setup uses [windows-reactor](https://github.com/microsoft/windows-rs) (WinUI 3),
+pinned to a commit until a release with the APIs it needs is published.
 
 Some tests compare against real logs and binaries in the git-ignored `reference/`
 directory and are skipped when the files are absent. The development workflow is

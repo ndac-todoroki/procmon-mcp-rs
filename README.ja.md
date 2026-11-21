@@ -34,10 +34,23 @@ Claude などの MCP クライアントから
 ## 必要なもの
 
 - Windows 10 または 11（x64 または ARM64）
-- `install` を実行するときの管理者権限（1回だけ）
+- インストールするときに、管理者としてサインインしていること（1回だけ）
 - Claude Desktop などの MCP クライアント
+- セットアップを使う場合は
+  [Windows App Runtime 2.x](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads)
 
 ## インストール
+
+### セットアップを使う
+
+`procmon-mcp-setup.exe` を実行し、画面の案内に従います。何を変更するかの説明と、
+Sysinternals のライセンスへの同意を経て、**[インストール]** を選んだときにだけ管理者権限を求めます。
+最後の画面には、Claude Desktop の設定をコピーするボタンがあります。セットアップは自身のコピーを残すので、
+**設定 → アプリ → インストールされているアプリ** から procmon-mcp を削除できます。
+
+セットアップには Windows App Runtime 2.x が必要です（「必要なもの」を参照）。MCP サーバーには不要です。
+
+### コマンドラインを使う
 
 1. `procmon-mcp.exe` をビルドします（またはダウンロードします）。
 
@@ -79,8 +92,11 @@ Claude などの MCP クライアントから
    }
    ```
 
-`install` をもう一度実行すると、インストールを修復または更新します。Claude Desktop が
+セットアップや `install` をもう一度実行すると、インストールを修復または更新します。Claude Desktop が
 `procmon-mcp.exe` を使用中だと置き換えられないので、先に Claude Desktop を終了してください。
+
+インストールできるのは、管理者としてサインインしている場合だけです。取得用のタスクは、その利用者の
+管理者権限で動くためです。別のアカウントの資格情報で昇格した場合は中止します。
 
 ## ツール
 
@@ -169,14 +185,16 @@ Claude Desktop ──stdio──> procmon-mcp.exe mcp        （通常権限）
 
 ## アンインストール
 
-管理者として開いたターミナルで実行します（先に Claude Desktop を終了してください）。
+**設定 → アプリ → インストールされているアプリ → procmon-mcp → アンインストール** を使うか、
+管理者として開いたターミナルで次を実行します。
 
 ```powershell
 C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe uninstall
 ```
 
-タスクと `C:\ProgramData\ProcmonMcp` を削除します。Claude Desktop の設定から `procmon` の項目も
-削除してください。
+どちらも、タスク、「インストールされているアプリ」の項目、`C:\ProgramData\ProcmonMcp` を削除します。
+先に Claude Desktop を終了してください。実行中のプログラムは別の場所へ移し、Windows の再起動時に削除します。
+Claude Desktop の設定から `procmon` の項目も削除してください。
 
 ## 制限事項
 
@@ -187,11 +205,22 @@ C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe uninstall
 
 ## 開発
 
+リポジトリはワークスペースです。サーバー（`procmon-mcp`、ルートのパッケージ）と、サーバーを埋め込む
+セットアップ（`setup/`、`procmon-mcp-setup`）からなります。次の順番でビルドします。
+
 ```powershell
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo deny check
+cargo build --release                        # target\release\procmon-mcp.exe
+cargo build --release -p procmon-mcp-setup   # target\release\procmon-mcp-setup.exe
 ```
+
+```powershell
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo deny --workspace check
+```
+
+セットアップは [windows-reactor](https://github.com/microsoft/windows-rs)（WinUI 3）を使います。
+必要な API を含む版が公開されるまで、コミットを固定して使っています。
 
 一部のテストは、git の管理外の `reference/` フォルダーにある実際のログや実行ファイルと比較します。
 ファイルがない場合、それらのテストはスキップします。開発の進め方は [CLAUDE.md](CLAUDE.md) と
