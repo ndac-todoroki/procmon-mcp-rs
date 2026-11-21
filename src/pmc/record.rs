@@ -305,6 +305,16 @@ mod tests {
     }
 
     #[test]
+    fn maximal_size_fields_are_reported_as_truncated_without_overflow() {
+        let mut bytes = record_bytes("Profiling", &[0, 0, 0, 0]);
+        let header_and_name = 0x10 + 20;
+        set_u32(&mut bytes, 0, u32::MAX);
+        set_u32(&mut bytes, 12, u32::MAX - header_and_name);
+
+        assert_eq!(parse(&bytes), Err(PmcError::Truncated { offset: 0 }));
+    }
+
+    #[test]
     fn record_whose_name_runs_past_the_end_is_truncated() {
         let mut bytes = record_bytes("Profiling", &[]);
         bytes.truncate(HEADER_SIZE + 4);
