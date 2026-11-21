@@ -70,7 +70,8 @@ pub struct Summary {
     /// FILETIME of the first and last matching event.
     pub first_timestamp: Option<u64>,
     pub last_timestamp: Option<u64>,
-    pub by_process: Ranking,
+    /// Sorted by descending count, then name and PID.
+    pub by_process: Vec<ProcessCount>,
     pub by_operation: Ranking,
     /// Sorted by descending count, then operation and path.
     pub by_operation_path: Vec<OperationPath>,
@@ -78,6 +79,14 @@ pub struct Summary {
     pub periodic_opens: Vec<PeriodicOpen>,
     /// Operations whose NTSTATUS is an error, by descending count.
     pub failures: Vec<Failure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessCount {
+    pub name: String,
+    /// `None` when the event's process is missing from the process table.
+    pub pid: Option<u32>,
+    pub count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,7 +144,7 @@ pub struct Summarizer {
     total: u64,
     first_timestamp: Option<u64>,
     last_timestamp: Option<u64>,
-    by_process: HashMap<String, u64>,
+    by_process: HashMap<(String, Option<u32>), u64>,
     by_operation: HashMap<&'static str, u64>,
     by_operation_path: HashMap<(&'static str, String), (u64, Option<u64>)>,
     open_times: HashMap<(String, String), Vec<u64>>,
@@ -160,8 +169,8 @@ impl Summarizer {
         self.first_timestamp.get_or_insert(event.timestamp);
         self.last_timestamp = Some(event.timestamp);
         let process_key = match process {
-            Some(p) => format!("{} (PID {})", p.name, p.pid),
-            None => "<unknown process>".to_owned(),
+            Some(p) => (p.name.clone(), Some(p.pid)),
+            None => ("<unknown process>".to_owned(), None),
         };
         *self.by_process.entry(process_key).or_default() += 1;
         *self.by_operation.entry(event.operation_name()).or_default() += 1;
@@ -195,13 +204,27 @@ impl Summarizer {
             total: self.total,
             first_timestamp: self.first_timestamp,
             last_timestamp: self.last_timestamp,
-            by_process: rank(self.by_process),
+            by_process: rank_processes(self.by_process),
             by_operation: rank(self.by_operation),
             by_operation_path: rank_operation_paths(self.by_operation_path),
             periodic_opens: periodic_opens(self.open_times),
             failures: rank_failures(self.failures),
         }
     }
+}
+
+fn rank_processes(counts: HashMap<(String, Option<u32>), u64>) -> Vec<ProcessCount> {
+    let mut v: Vec<ProcessCount> = counts
+        .into_iter()
+        .map(|((name, pid), count)| ProcessCount { name, pid, count })
+        .collect();
+    v.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.pid.cmp(&b.pid))
+    });
+    v
 }
 
 fn rank<K: ToString>(counts: HashMap<K, u64>) -> Ranking {
@@ -431,12 +454,17 @@ mod tests {
     #[test]
     fn ranks_processes_by_name_and_pid() {
         let s = summarize(Filter::default(), &mixed_events());
+        let pc = |name: &str, pid, count| ProcessCount {
+            name: name.into(),
+            pid: Some(pid),
+            count,
+        };
         assert_eq!(
             s.by_process,
             [
-                ("App.exe (PID 10)".to_owned(), 2),
-                ("App.exe (PID 11)".to_owned(), 1),
-                ("other.exe (PID 20)".to_owned(), 1),
+                pc("App.exe", 10, 2),
+                pc("App.exe", 11, 1),
+                pc("other.exe", 20, 1)
             ]
         );
     }

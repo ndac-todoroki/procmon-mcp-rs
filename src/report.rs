@@ -25,8 +25,12 @@ pub fn render(summary: &Summary, top_n: usize) -> String {
     );
 
     out.push_str("\n## By process\n");
-    for (name, count) in summary.by_process.iter().take(top_n) {
-        let _ = writeln!(out, "- {name}: {count}");
+    for p in summary.by_process.iter().take(top_n) {
+        match p.pid {
+            Some(pid) => writeln!(out, "- {} (PID {pid}): {}", p.name, p.count),
+            None => writeln!(out, "- {}: {}", p.name, p.count),
+        }
+        .expect("writing to a String cannot fail");
     }
 
     out.push_str("\n## By operation\n");
@@ -70,14 +74,18 @@ pub fn render(summary: &Summary, top_n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::{Failure, OperationPath, PeriodicOpen};
+    use crate::analysis::{Failure, OperationPath, PeriodicOpen, ProcessCount};
 
     fn sample() -> Summary {
         Summary {
             total: 30,
             first_timestamp: Some(0),
             last_timestamp: Some(20_000_000), // 2 s
-            by_process: vec![("app.exe (PID 7)".into(), 30)],
+            by_process: vec![ProcessCount {
+                name: "app.exe".into(),
+                pid: Some(7),
+                count: 30,
+            }],
             by_operation: vec![("ReadFile".into(), 20), ("CreateFile".into(), 10)],
             by_operation_path: vec![
                 OperationPath {
