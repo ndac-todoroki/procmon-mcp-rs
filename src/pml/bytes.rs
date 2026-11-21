@@ -65,6 +65,18 @@ impl<'a> ByteReader<'a> {
         Ok(self.bytes(N)?.try_into().expect("slice has length N"))
     }
 
+    pub(crate) fn u8(&mut self) -> Result<u8, PmlError> {
+        Ok(self.bytes(1)?[0])
+    }
+
+    pub(crate) fn i64(&mut self) -> Result<i64, PmlError> {
+        Ok(i64::from_le_bytes(self.array()?))
+    }
+
+    pub(crate) fn skip(&mut self, len: usize) -> Result<(), PmlError> {
+        self.bytes(len).map(|_| ())
+    }
+
     pub(crate) fn u16(&mut self) -> Result<u16, PmlError> {
         Ok(u16::from_le_bytes(self.array()?))
     }

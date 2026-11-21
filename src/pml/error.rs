@@ -20,7 +20,10 @@ impl fmt::Display for PmlError {
             PmlError::Io(e) => write!(f, "I/O error: {e}"),
             PmlError::NotPml => f.write_str("not a Process Monitor log (missing PML_ signature)"),
             PmlError::UnsupportedVersion(v) => {
-                write!(f, "unsupported PML format version {v} (only version 9 is supported)")
+                write!(
+                    f,
+                    "unsupported PML format version {v} (only version 9 is supported)"
+                )
             }
             PmlError::Truncated => f.write_str("PML file is truncated or corrupt"),
             PmlError::NotClosedCleanly => {

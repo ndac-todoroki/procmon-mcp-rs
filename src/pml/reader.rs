@@ -4,6 +4,7 @@ use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 
 use super::bytes::{ByteReader, read_vec, seek_to};
+use super::details::{self, DetailInput};
 use super::event::{Event, EventClass};
 use super::tables::{Process, read_processes, read_strings};
 use super::{Header, PmlError};
@@ -55,8 +56,11 @@ impl<R: Read + Seek> PmlReader<R> {
     /// Iterates over events in file order.
     pub fn events(&mut self) -> impl Iterator<Item = Result<Event, PmlError>> + '_ {
         let offsets = std::mem::take(&mut self.event_offsets);
+        let is_64bit = self.header.is_64bit;
         let inner = &mut self.inner;
-        offsets.into_iter().map(move |off| read_event(inner, off))
+        offsets
+            .into_iter()
+            .map(move |off| read_event(inner, off, is_64bit))
     }
 }
 
@@ -70,7 +74,7 @@ fn read_event_offsets<R: Read + Seek>(r: &mut R, header: &Header) -> Result<Vec<
         .collect())
 }
 
-fn read_event<R: Read + Seek>(r: &mut R, offset: u64) -> Result<Event, PmlError> {
+fn read_event<R: Read + Seek>(r: &mut R, offset: u64, is_64bit: bool) -> Result<Event, PmlError> {
     seek_to(r, offset)?;
     let buf = read_vec(r, EVENT_HEADER_SIZE)?;
     let mut h = ByteReader::new(&buf);
@@ -82,6 +86,32 @@ fn read_event<R: Read + Seek>(r: &mut R, offset: u64) -> Result<Event, PmlError>
     let duration = h.u64()?;
     let timestamp = h.u64()?;
     let result = h.u32()?;
+    let stack_depth = u64::from(h.u16()?);
+    h.skip(2)?;
+    let details_size = u64::from(h.u32()?);
+    let extra_offset = u64::from(h.u32()?);
+
+    let pointer_size = if is_64bit { 8 } else { 4 };
+    seek_to(r, offset + EVENT_HEADER_SIZE + stack_depth * pointer_size)?;
+    let details = read_vec(r, details_size)?;
+    // The extra block's offset is relative to the event start and prefixed by its size.
+    let extra = if extra_offset == 0 {
+        None
+    } else {
+        seek_to(r, offset + extra_offset)?;
+        let size = read_vec(r, 2)?;
+        Some(read_vec(
+            r,
+            u64::from(u16::from_le_bytes([size[0], size[1]])),
+        )?)
+    };
+    let (path, detail) = details::parse(&DetailInput {
+        class,
+        operation,
+        is_64bit,
+        details: &details,
+        extra: extra.as_deref(),
+    });
     Ok(Event {
         process_index,
         tid,
@@ -90,5 +120,7 @@ fn read_event<R: Read + Seek>(r: &mut R, offset: u64) -> Result<Event, PmlError>
         duration,
         timestamp,
         result,
+        path,
+        detail,
     })
 }

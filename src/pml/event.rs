@@ -40,6 +40,20 @@ pub struct Event {
     pub timestamp: u64,
     /// NTSTATUS.
     pub result: u32,
+    /// The Path column. `None` for operations without a path.
+    pub path: Option<String>,
+    pub detail: Detail,
+}
+
+/// The parts of the Detail column this crate understands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detail {
+    None,
+    /// ReadFile / WriteFile.
+    ReadWrite {
+        offset: i64,
+        length: u32,
+    },
 }
 
 impl Event {
@@ -99,8 +113,11 @@ const REGISTRY_OPERATIONS: &[&str] = &[
     "RegQueryKeySecurity",
 ];
 
-const PROFILING_OPERATIONS: &[&str] =
-    &["Thread Profiling", "Process Profiling", "Debug Output Profiling"];
+const PROFILING_OPERATIONS: &[&str] = &[
+    "Thread Profiling",
+    "Process Profiling",
+    "Debug Output Profiling",
+];
 
 // Procmon prefixes these with "TCP " or "UDP " based on the event details.
 const NETWORK_OPERATIONS: &[&str] = &[
