@@ -18,3 +18,5 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# windows-reactor 0.101 (the GUI installer) is not on crates.io yet; it is pinned to a commit.
+allow-git = ["https://github.com/microsoft/windows-rs"]

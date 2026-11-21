@@ -1,0 +1,14 @@
+[package]
+name = "procmon-mcp-setup"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Graphical installer and uninstaller for procmon-mcp"
+license = "MIT"
+publish = false
+
+[dependencies]
+procmon-mcp = { path = ".." }
+# 0.101 adds font_family, needed to show paths in a monospace font. Not on crates.io yet.
+windows-reactor = { git = "https://github.com/microsoft/windows-rs", rev = "5bd440b234e5d966e48f210e05ab217cefe00e10" }
+windows = { workspace = true, features = ["Win32_Globalization"] }
