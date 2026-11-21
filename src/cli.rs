@@ -8,6 +8,7 @@ pub const DEFAULT_TOP_N: usize = 15;
 
 pub const USAGE: &str = "\
 Usage:
+  procmon-mcp mcp                          run the MCP server on stdin/stdout
   procmon-mcp summarize <file.pml> [options]
 
 Options:
@@ -20,6 +21,8 @@ Options:
 
 #[derive(Debug, PartialEq)]
 pub enum Command {
+    /// Run the MCP server on stdin/stdout.
+    Mcp,
     Summarize {
         path: PathBuf,
         filter: Filter,
@@ -30,6 +33,8 @@ pub enum Command {
 /// Parses the arguments after the program name.
 pub fn parse_args(args: &[String]) -> Result<Command, String> {
     match args.split_first() {
+        Some((cmd, [])) if cmd == "mcp" => Ok(Command::Mcp),
+        Some((cmd, _)) if cmd == "mcp" => Err("mcp takes no arguments".to_owned()),
         Some((cmd, rest)) if cmd == "summarize" => parse_summarize(rest),
         Some((cmd, _)) => Err(format!("unknown command: {cmd}")),
         None => Err("missing command".to_owned()),
@@ -119,10 +124,16 @@ mod tests {
     }
 
     #[test]
+    fn mcp_starts_the_stdio_server() {
+        assert_eq!(parse_args(&args("mcp")), Ok(Command::Mcp));
+    }
+
+    #[test]
     fn rejects_missing_or_unknown_input() {
         for bad in [
             "",
             "frobnicate",
+            "mcp --verbose",
             "summarize",
             "summarize a.pml b.pml",
             "summarize a.pml --pid",

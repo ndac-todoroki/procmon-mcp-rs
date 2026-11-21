@@ -14,6 +14,13 @@ fn main() -> ExitCode {
         }
     };
     match command {
+        Command::Mcp => match procmon_mcp::mcp::serve(std::io::stdin().lock(), std::io::stdout()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("procmon-mcp: stdio error: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Command::Summarize {
             path,
             filter,
