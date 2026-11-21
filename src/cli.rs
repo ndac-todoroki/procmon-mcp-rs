@@ -24,6 +24,8 @@ Options:
 pub enum Command {
     /// Run the MCP server on stdin/stdout.
     Mcp,
+    /// Run the pending capture elevated; started by the scheduled task only.
+    Runner,
     Summarize {
         path: PathBuf,
         filter: Filter,
@@ -37,6 +39,8 @@ pub enum Command {
 pub fn parse_args(args: &[String]) -> Result<Command, String> {
     match args.split_first() {
         Some((cmd, [])) if cmd == "mcp" => Ok(Command::Mcp),
+        Some((cmd, [])) if cmd == "runner" => Ok(Command::Runner),
+        Some((cmd, _)) if cmd == "runner" => Err("runner takes no arguments".to_owned()),
         Some((cmd, _)) if cmd == "mcp" => Err("mcp takes no arguments".to_owned()),
         Some((cmd, rest)) if cmd == "summarize" => parse_summarize(rest),
         Some((cmd, _)) => Err(format!("unknown command: {cmd}")),
@@ -141,6 +145,11 @@ mod tests {
     }
 
     #[test]
+    fn runner_runs_the_pending_capture() {
+        assert_eq!(parse_args(&args("runner")), Ok(Command::Runner));
+    }
+
+    #[test]
     fn mcp_starts_the_stdio_server() {
         assert_eq!(parse_args(&args("mcp")), Ok(Command::Mcp));
     }
@@ -151,6 +160,7 @@ mod tests {
             "",
             "frobnicate",
             "mcp --verbose",
+            "runner now",
             "summarize",
             "summarize a.pml b.pml",
             "summarize a.pml --pid",

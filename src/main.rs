@@ -21,6 +21,18 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Command::Runner => {
+            let result = procmon_mcp::layout::Layout::system()
+                .map_err(|e| format!("cannot locate ProgramData: {e}"))
+                .and_then(|layout| procmon_mcp::runner::run(&layout));
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(message) => {
+                    eprintln!("procmon-mcp runner: {message}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Command::Summarize {
             path,
             filter,
