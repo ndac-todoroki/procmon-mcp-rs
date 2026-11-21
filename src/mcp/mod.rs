@@ -166,7 +166,7 @@ impl Server {
                     Value::Null => json!({}),
                     a => a.clone(),
                 };
-                let output = tools::call(name, &arguments).ok_or_else(|| {
+                let output = tools::call(name, &arguments, &mut |_, _| {}).ok_or_else(|| {
                     RpcError::new(INVALID_PARAMS, format!("Unknown tool: {name}"))
                 })?;
                 let mut result = json!({

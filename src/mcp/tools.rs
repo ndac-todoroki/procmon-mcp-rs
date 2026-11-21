@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use crate::analysis::{Filter, summarize_file};
+use crate::capture::ProgressFn;
 use crate::cli::DEFAULT_TOP_N;
 use crate::report::{output_schema, to_json};
 
@@ -72,7 +73,7 @@ pub fn definitions() -> Value {
 }
 
 /// Runs a tool. `None` means there is no tool with that name.
-pub fn call(name: &str, arguments: &Value) -> Option<ToolOutput> {
+pub fn call(name: &str, arguments: &Value, _progress: &mut ProgressFn<'_>) -> Option<ToolOutput> {
     match name {
         "summarize_log" => Some(summarize_log(arguments).unwrap_or_else(ToolOutput::error)),
         _ => None,
@@ -159,11 +160,11 @@ mod tests {
 
     #[test]
     fn unknown_tool_is_none() {
-        assert_eq!(call("format_disk", &json!({})), None);
+        assert_eq!(call("format_disk", &json!({}), &mut |_, _| {}), None);
     }
 
     fn summarize(arguments: Value) -> ToolOutput {
-        call("summarize_log", &arguments).unwrap()
+        call("summarize_log", &arguments, &mut |_, _| {}).unwrap()
     }
 
     #[test]
