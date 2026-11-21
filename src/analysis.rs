@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::pml::{Event, EventClass, Process};
+use crate::pml::{Detail, Event, EventClass, Process};
 
 /// Conditions an event must meet to be counted. String comparisons ignore case.
 #[derive(Debug, Clone, Default)]
@@ -63,6 +63,17 @@ pub struct Summary {
     pub last_timestamp: Option<u64>,
     pub by_process: Ranking,
     pub by_operation: Ranking,
+    /// Sorted by descending count, then operation and path.
+    pub by_operation_path: Vec<OperationPath>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationPath {
+    pub operation: String,
+    pub path: String,
+    pub count: u64,
+    /// Total bytes transferred, for ReadFile / WriteFile only.
+    pub bytes: Option<u64>,
 }
 
 #[derive(Default)]
@@ -73,6 +84,7 @@ pub struct Summarizer {
     last_timestamp: Option<u64>,
     by_process: HashMap<String, u64>,
     by_operation: HashMap<&'static str, u64>,
+    by_operation_path: HashMap<(&'static str, String), (u64, Option<u64>)>,
 }
 
 impl Summarizer {
@@ -98,6 +110,16 @@ impl Summarizer {
         };
         *self.by_process.entry(process_key).or_default() += 1;
         *self.by_operation.entry(event.operation_name()).or_default() += 1;
+
+        let path = event.path.clone().unwrap_or_default();
+        let entry = self
+            .by_operation_path
+            .entry((event.operation_name(), path))
+            .or_default();
+        entry.0 += 1;
+        if let Detail::ReadWrite { length, .. } = event.detail {
+            *entry.1.get_or_insert(0) += u64::from(length);
+        }
     }
 
     pub fn finish(self) -> Summary {
@@ -107,6 +129,7 @@ impl Summarizer {
             last_timestamp: self.last_timestamp,
             by_process: rank(self.by_process),
             by_operation: rank(self.by_operation),
+            by_operation_path: rank_operation_paths(self.by_operation_path),
         }
     }
 }
@@ -117,6 +140,27 @@ fn rank<K: ToString>(counts: HashMap<K, u64>) -> Ranking {
         .map(|(k, n)| (k.to_string(), n))
         .collect();
     v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v
+}
+
+fn rank_operation_paths(
+    counts: HashMap<(&'static str, String), (u64, Option<u64>)>,
+) -> Vec<OperationPath> {
+    let mut v: Vec<OperationPath> = counts
+        .into_iter()
+        .map(|((operation, path), (count, bytes))| OperationPath {
+            operation: operation.to_owned(),
+            path,
+            count,
+            bytes,
+        })
+        .collect();
+    v.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.operation.cmp(&b.operation))
+            .then_with(|| a.path.cmp(&b.path))
+    });
     v
 }
 
@@ -274,6 +318,48 @@ mod tests {
                 ("App.exe (PID 10)".to_owned(), 2),
                 ("App.exe (PID 11)".to_owned(), 1),
                 ("other.exe (PID 20)".to_owned(), 1),
+            ]
+        );
+    }
+
+    fn read(path: &str, length: u32) -> Event {
+        Event {
+            detail: Detail::ReadWrite { offset: 0, length },
+            ..fs(READ_FILE, path, 0)
+        }
+    }
+
+    #[test]
+    fn ranks_operation_and_path_pairs_and_sums_read_write_bytes() {
+        let p = process("a.exe", 1);
+        let events = [
+            (read("big", 4096), p.clone()),
+            (read("big", 612), p.clone()),
+            (read("small", 10), p.clone()),
+            (fs(CREATE_FILE, "big", 0), p.clone()),
+        ];
+        let s = summarize(Filter::default(), &events);
+        assert_eq!(
+            s.by_operation_path,
+            [
+                OperationPath {
+                    operation: "ReadFile".into(),
+                    path: "big".into(),
+                    count: 2,
+                    bytes: Some(4708)
+                },
+                OperationPath {
+                    operation: "CreateFile".into(),
+                    path: "big".into(),
+                    count: 1,
+                    bytes: None
+                },
+                OperationPath {
+                    operation: "ReadFile".into(),
+                    path: "small".into(),
+                    count: 1,
+                    bytes: Some(10)
+                },
             ]
         );
     }
