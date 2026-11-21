@@ -19,6 +19,8 @@ pub struct CaptureFilter {
 pub enum CaptureFilterError {
     /// The text in `field` is longer than [`MAX_TEXT_UNITS`] UTF-16 units.
     TooLong { field: &'static str },
+    /// The text in `field` contains NUL or another control character.
+    ControlCharacter { field: &'static str },
 }
 
 /// Longest accepted condition text, in UTF-16 units (Windows' `MAX_PATH`).
@@ -82,6 +84,10 @@ fn validate(filter: &CaptureFilter) -> Result<(), CaptureFilterError> {
         for value in values {
             if value.encode_utf16().count() > MAX_TEXT_UNITS {
                 return Err(CaptureFilterError::TooLong { field });
+            }
+            // char::is_control covers NUL, the rest of C0, DEL and C1.
+            if value.chars().any(char::is_control) {
+                return Err(CaptureFilterError::ControlCharacter { field });
             }
         }
     }
@@ -282,6 +288,27 @@ mod tests {
                 capture_configuration(&filter_with(field, &over_limit)).err(),
                 Some(CaptureFilterError::TooLong { field }),
             );
+        }
+    }
+
+    #[test]
+    fn text_with_nul_or_other_control_characters_is_rejected() {
+        // NUL would end the value early in Procmon's C-string view of it.
+        for bad in ["a\0b", "a\nb", "\t", "a\u{1b}", "a\u{7f}", "a\u{85}"] {
+            for field in TEXT_FIELDS {
+                assert_eq!(
+                    capture_configuration(&filter_with(field, bad)).err(),
+                    Some(CaptureFilterError::ControlCharacter { field }),
+                    "{bad:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn printable_non_ascii_text_is_accepted() {
+        for field in TEXT_FIELDS {
+            assert!(capture_configuration(&filter_with(field, "C:\\ユーザー\\ä ö")).is_ok());
         }
     }
 
