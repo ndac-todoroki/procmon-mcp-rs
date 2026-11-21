@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use procmon_mcp::analysis::summarize_file;
 use procmon_mcp::cli::{Command, USAGE, parse_args};
-use procmon_mcp::report::render;
+use procmon_mcp::report::{render, to_json};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -25,7 +25,12 @@ fn main() -> ExitCode {
             path,
             filter,
             top_n,
+            json,
         } => match summarize_file(&path, filter) {
+            Ok(summary) if json => {
+                println!("{:#}", to_json(&summary, top_n));
+                ExitCode::SUCCESS
+            }
             Ok(summary) => {
                 print!("{}", render(&summary, top_n));
                 ExitCode::SUCCESS

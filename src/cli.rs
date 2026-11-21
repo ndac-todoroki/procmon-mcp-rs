@@ -17,6 +17,7 @@ Options:
   --operation <name>      only this operation (repeatable)
   --path-contains <text>  only events whose path contains this text
   --top <n>               entries per section (default 15)
+  --json                  print the JSON returned to MCP clients
 ";
 
 #[derive(Debug, PartialEq)]
@@ -27,6 +28,8 @@ pub enum Command {
         path: PathBuf,
         filter: Filter,
         top_n: usize,
+        /// Print the JSON that MCP clients receive instead of the text report.
+        json: bool,
     },
 }
 
@@ -45,6 +48,7 @@ fn parse_summarize(args: &[String]) -> Result<Command, String> {
     let mut path = None;
     let mut filter = Filter::default();
     let mut top_n = DEFAULT_TOP_N;
+    let mut json = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let mut value = || {
@@ -57,6 +61,7 @@ fn parse_summarize(args: &[String]) -> Result<Command, String> {
             "--pid" => filter.pid = Some(parse_number(arg, &value()?)?),
             "--operation" => filter.operations.push(value()?),
             "--path-contains" => filter.path_contains = Some(value()?),
+            "--json" => json = true,
             "--top" => {
                 top_n = parse_number(arg, &value()?)?;
                 if top_n == 0 {
@@ -73,6 +78,7 @@ fn parse_summarize(args: &[String]) -> Result<Command, String> {
         path,
         filter,
         top_n,
+        json,
     })
 }
 
@@ -98,6 +104,7 @@ mod tests {
                 path: "log.pml".into(),
                 filter: Filter::default(),
                 top_n: DEFAULT_TOP_N,
+                json: false,
             })
         );
     }
@@ -119,8 +126,18 @@ mod tests {
                     path_contains: Some("cfg".into()),
                 },
                 top_n: 5,
+                json: false,
             })
         );
+    }
+
+    #[test]
+    fn summarize_json_switches_output_to_json() {
+        let Ok(Command::Summarize { json, .. }) = parse_args(&args("summarize --json a.pml"))
+        else {
+            panic!("not parsed as summarize");
+        };
+        assert!(json);
     }
 
     #[test]
