@@ -10,6 +10,8 @@ pub enum PmlError {
     UnsupportedVersion(u32),
     /// A structure extends past the end of the file or of its enclosing record.
     Truncated,
+    /// Procmon did not finish writing the log (table offsets are zero).
+    NotClosedCleanly,
 }
 
 impl fmt::Display for PmlError {
@@ -21,6 +23,9 @@ impl fmt::Display for PmlError {
                 write!(f, "unsupported PML format version {v} (only version 9 is supported)")
             }
             PmlError::Truncated => f.write_str("PML file is truncated or corrupt"),
+            PmlError::NotClosedCleanly => {
+                f.write_str("PML file was not closed cleanly by Process Monitor")
+            }
         }
     }
 }
