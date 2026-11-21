@@ -26,6 +26,8 @@ pub struct Configuration {
 pub enum PmcError {
     /// The input ends inside the structure that starts at `offset`.
     Truncated { offset: usize },
+    /// The size fields of the record at `offset` are inconsistent.
+    InvalidSize { offset: usize },
 }
 
 impl fmt::Display for PmcError {
@@ -33,6 +35,12 @@ impl fmt::Display for PmcError {
         match self {
             PmcError::Truncated { offset } => {
                 write!(f, "PMC data ends inside the structure at offset {offset}")
+            }
+            PmcError::InvalidSize { offset } => {
+                write!(
+                    f,
+                    "inconsistent size fields in the PMC record at offset {offset}"
+                )
             }
         }
     }
@@ -95,8 +103,15 @@ fn parse_record(rest: &[u8], offset: usize) -> Result<(Record, usize), PmcError>
         u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]]) as usize
     };
     let record_size = field(0);
+    let header_size = field(1);
     let header_and_name_size = field(2);
     let data_size = field(3);
+    if header_size != HEADER_SIZE
+        || header_and_name_size < HEADER_SIZE
+        || header_and_name_size.checked_add(data_size) != Some(record_size)
+    {
+        return Err(PmcError::InvalidSize { offset });
+    }
 
     let name_bytes = rest
         .get(HEADER_SIZE..header_and_name_size)
@@ -203,6 +218,38 @@ mod tests {
         bytes.truncate(bytes.len() - 2);
 
         assert_eq!(parse(&bytes), Err(PmcError::Truncated { offset: 0 }));
+    }
+
+    fn set_u32(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    #[test]
+    fn header_size_other_than_0x10_is_invalid() {
+        let mut bytes = record_bytes("Profiling", &[0, 0, 0, 0]);
+        set_u32(&mut bytes, 4, 0x14);
+
+        assert_eq!(parse(&bytes), Err(PmcError::InvalidSize { offset: 0 }));
+    }
+
+    #[test]
+    fn record_size_that_disagrees_with_name_and_data_sizes_is_invalid() {
+        let mut bytes = record_bytes("Profiling", &[0, 0, 0, 0]);
+        bytes.extend(record_bytes("Logfile", &[]));
+        // Pointing inside the record would desynchronize the parser; zero would loop forever.
+        for bad_size in [0, 4, 0x24 + 2] {
+            set_u32(&mut bytes, 0, bad_size);
+
+            assert_eq!(parse(&bytes), Err(PmcError::InvalidSize { offset: 0 }));
+        }
+    }
+
+    #[test]
+    fn header_and_name_size_smaller_than_the_header_is_invalid() {
+        let mut bytes = record_bytes("Profiling", &[]);
+        set_u32(&mut bytes, 8, 0x0e);
+
+        assert_eq!(parse(&bytes), Err(PmcError::InvalidSize { offset: 0 }));
     }
 
     #[test]
