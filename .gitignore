@@ -2,3 +2,7 @@
 
 # 参照用の実ログ・設定・旧実装。コンピューター名やパスを含み、サイズも大きいためコミットしない
 /reference/
+
+# Claude Code: per-user settings and agent worktrees
+/.claude/settings.local.json
+/.claude/worktrees/
