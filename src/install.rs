@@ -145,6 +145,24 @@ pub fn uninstall() -> Result<(), String> {
     Ok(())
 }
 
+/// The elevated account must be the signed-in user.
+///
+/// The capture task runs as that account with its highest privileges, and the MCP
+/// server, running as the signed-in user, must be able to start it and write requests.
+/// Elevating with another administrator's credentials satisfies neither: a standard
+/// user's task is never elevated, and another account's task only starts while that
+/// account is signed in.
+pub fn ensure_signed_in_user(elevated_sid: &str, signed_in_sid: &str) -> Result<(), String> {
+    if elevated_sid == signed_in_sid {
+        Ok(())
+    } else {
+        Err("procmon-mcp can only be installed by the signed-in user, who must be an \
+             administrator; this was elevated with another account's credentials. \
+             Sign in with an administrator account and run it again"
+            .to_owned())
+    }
+}
+
 fn require_elevated() -> Result<(), String> {
     match win::is_elevated() {
         Ok(true) => Ok(()),
@@ -361,6 +379,18 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_an_elevation_by_the_signed_in_user() {
+        assert_eq!(ensure_signed_in_user("S-1-5-21-1-1001", "S-1-5-21-1-1001"), Ok(()));
+    }
+
+    #[test]
+    fn refuses_an_elevation_with_another_account_and_says_why() {
+        let err = ensure_signed_in_user("S-1-5-21-1-500", "S-1-5-21-1-1001").unwrap_err();
+        assert!(err.contains("signed-in user"), "{err}");
+        assert!(err.contains("administrator"), "{err}");
+    }
 
     #[test]
     fn downloads_the_arm64_build_on_arm64_and_the_x64_build_otherwise() {
