@@ -89,6 +89,7 @@ impl PipeId {
         valid.then(|| PipeId(text.to_owned()))
     }
 
+    #[cfg(test)]
     pub fn as_str(&self) -> &str {
         &self.0
     }

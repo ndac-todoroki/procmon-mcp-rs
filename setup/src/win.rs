@@ -25,8 +25,7 @@ use windows::Win32::System::Pipes::{
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessId, INFINITE, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    GetExitCodeProcess, GetProcessId, INFINITE, WaitForSingleObject,
 };
 use windows::Win32::UI::Shell::{
     SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
@@ -120,7 +119,11 @@ fn handle(owned: &OwnedHandle) -> HANDLE {
 }
 
 /// Opens a process to wait for it and read its exit code.
+#[cfg(test)]
 pub fn open_process(pid: u32) -> io::Result<OwnedHandle> {
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
     // SAFETY: on success the handle is owned by the result.
     unsafe {
         let h = OpenProcess(
@@ -268,7 +271,7 @@ mod tests {
     fn gives_up_when_the_worker_exits_without_connecting() {
         let id = PipeId::new().unwrap();
         let server = PipeServer::create(&id).unwrap();
-        let child = std::process::Command::new("cmd.exe")
+        let mut child = std::process::Command::new("cmd.exe")
             .args(["/c", "exit", "3"])
             .spawn()
             .unwrap();
@@ -276,6 +279,7 @@ mod tests {
         let err = server.accept(Arc::clone(&process)).unwrap_err();
         assert!(err.to_string().contains("did not connect"), "{err}");
         assert_eq!(exit_code(&process).unwrap(), 3);
+        let _ = child.wait();
     }
 
     #[test]
