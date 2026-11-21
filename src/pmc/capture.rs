@@ -16,7 +16,13 @@ pub struct CaptureFilter {
 
 /// Why a [`CaptureFilter`] was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CaptureFilterError {}
+pub enum CaptureFilterError {
+    /// The text in `field` is longer than [`MAX_TEXT_UNITS`] UTF-16 units.
+    TooLong { field: &'static str },
+}
+
+/// Longest accepted condition text, in UTF-16 units (Windows' `MAX_PATH`).
+pub const MAX_TEXT_UNITS: usize = 260;
 
 /// Builds the configuration for `filter`: the default filter plus its Include rules,
 /// with filtered-out events dropped from the log.
@@ -25,6 +31,7 @@ pub enum CaptureFilterError {}
 /// export with default settings, in the same order. If Procmon writes loaded settings
 /// back to the user's profile, defaults are the least surprising values to leave there.
 pub fn capture_configuration(filter: &CaptureFilter) -> Result<Configuration, CaptureFilterError> {
+    validate(filter)?;
     let mut rules = default_filter_rules();
     rules.extend(include_rules(filter));
     let records = vec![
@@ -60,6 +67,25 @@ pub fn capture_configuration(filter: &CaptureFilter) -> Result<Configuration, Ca
         u32_record("RingBufferMin", 0),
     ];
     Ok(Configuration { records })
+}
+
+/// The configuration is consumed by an elevated Procmon, so only plain, bounded text
+/// reaches it.
+fn validate(filter: &CaptureFilter) -> Result<(), CaptureFilterError> {
+    let texts = [
+        ("process_name", filter.process_name.as_slice()),
+        ("operations", filter.operations.as_slice()),
+        ("path_contains", filter.path_contains.as_slice()),
+        ("result", filter.result.as_slice()),
+    ];
+    for (field, values) in texts {
+        for value in values {
+            if value.encode_utf16().count() > MAX_TEXT_UNITS {
+                return Err(CaptureFilterError::TooLong { field });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn include_rules(filter: &CaptureFilter) -> Vec<FilterRule> {
@@ -216,6 +242,47 @@ mod tests {
             include(Column::RESULT, Relation::Is, "NAME NOT FOUND"),
         ]);
         assert_eq!(filter_rules(&config), expected);
+    }
+
+    /// A filter with `value` placed in the field named `field`.
+    fn filter_with(field: &str, value: &str) -> CaptureFilter {
+        let value = value.to_string();
+        match field {
+            "process_name" => CaptureFilter {
+                process_name: Some(value),
+                ..CaptureFilter::default()
+            },
+            // Second position: every operation is checked, not just the first.
+            "operations" => CaptureFilter {
+                operations: vec!["ReadFile".to_string(), value],
+                ..CaptureFilter::default()
+            },
+            "path_contains" => CaptureFilter {
+                path_contains: Some(value),
+                ..CaptureFilter::default()
+            },
+            "result" => CaptureFilter {
+                result: Some(value),
+                ..CaptureFilter::default()
+            },
+            _ => unreachable!("{field}"),
+        }
+    }
+
+    const TEXT_FIELDS: [&str; 4] = ["process_name", "operations", "path_contains", "result"];
+
+    #[test]
+    fn text_up_to_260_utf16_units_is_accepted_and_longer_is_rejected() {
+        // U+1D11E takes two UTF-16 units, so the limit is not a char or byte count.
+        let at_limit = "\u{1d11e}".repeat(130);
+        let over_limit = format!("{at_limit}a");
+        for field in TEXT_FIELDS {
+            assert!(capture_configuration(&filter_with(field, &at_limit)).is_ok());
+            assert_eq!(
+                capture_configuration(&filter_with(field, &over_limit)).err(),
+                Some(CaptureFilterError::TooLong { field }),
+            );
+        }
     }
 
     #[test]
