@@ -9,5 +9,6 @@ pub mod mcp;
 pub mod pmc;
 pub mod pml;
 pub mod report;
+pub mod runner;
 pub mod task;
 pub mod win;
