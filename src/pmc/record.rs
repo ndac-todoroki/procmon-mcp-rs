@@ -33,6 +33,40 @@ impl fmt::Display for PmcError {
 
 impl std::error::Error for PmcError {}
 
+impl Configuration {
+    /// Serializes the records in order.
+    ///
+    /// # Panics
+    /// If a record is 4 GiB or larger, which the format cannot express.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for record in &self.records {
+            let mut name: Vec<u8> = record
+                .name
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            let header_and_name_size = size_u32(HEADER_SIZE + name.len());
+            let data_size = size_u32(record.data.len());
+            let record_size = header_and_name_size
+                .checked_add(data_size)
+                .expect("PMC record must be smaller than 4 GiB");
+            out.extend_from_slice(&record_size.to_le_bytes());
+            out.extend_from_slice(&size_u32(HEADER_SIZE).to_le_bytes());
+            out.extend_from_slice(&header_and_name_size.to_le_bytes());
+            out.extend_from_slice(&data_size.to_le_bytes());
+            out.append(&mut name);
+            out.extend_from_slice(&record.data);
+        }
+        out
+    }
+}
+
+fn size_u32(size: usize) -> u32 {
+    u32::try_from(size).expect("PMC record must be smaller than 4 GiB")
+}
+
 /// Parses a whole PMC file.
 pub fn parse(bytes: &[u8]) -> Result<Configuration, PmcError> {
     let mut records = Vec::new();
@@ -95,5 +129,29 @@ mod tests {
         let config = parse(&bytes).unwrap();
 
         assert_eq!(config.records, vec![record("Profiling", &[1, 0, 0, 0])]);
+    }
+
+    #[test]
+    fn records_keep_file_order_including_empty_data() {
+        let mut bytes = record_bytes("Logfile", &[]);
+        bytes.extend(record_bytes("Columns", &[0x32, 0]));
+
+        let config = parse(&bytes).unwrap();
+
+        assert_eq!(
+            config.records,
+            vec![record("Logfile", &[]), record("Columns", &[0x32, 0])]
+        );
+    }
+
+    #[test]
+    fn to_bytes_writes_records_back_in_the_same_layout() {
+        let mut bytes = record_bytes("Logfile", &[]);
+        bytes.extend(record_bytes("Profiling", &[1, 0, 0, 0]));
+        let config = Configuration {
+            records: vec![record("Logfile", &[]), record("Profiling", &[1, 0, 0, 0])],
+        };
+
+        assert_eq!(config.to_bytes(), bytes);
     }
 }
