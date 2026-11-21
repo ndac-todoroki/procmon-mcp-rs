@@ -76,11 +76,14 @@ pub struct FilterRule {
 /// Decodes the data of a `FilterRules` record. Error offsets are relative to `data`.
 pub fn decode_filter_rules(data: &[u8]) -> Result<Vec<FilterRule>, PmcError> {
     let mut reader = Reader { data, offset: 0 };
-    reader.u8()?;
+    if reader.u8()? != RULES_MARKER {
+        return Err(PmcError::InvalidValue { offset: 0 });
+    }
     let count = reader.u32()?;
     let mut rules = Vec::new();
     for _ in 0..count {
         let column = Column(reader.u32()?);
+        let relation_offset = reader.offset;
         let relation = match reader.u32()? {
             0 => Relation::Is,
             1 => Relation::IsNot,
@@ -89,11 +92,22 @@ pub fn decode_filter_rules(data: &[u8]) -> Result<Vec<FilterRule>, PmcError> {
             4 => Relation::BeginsWith,
             5 => Relation::EndsWith,
             6 => Relation::Contains,
-            _ => Relation::Excludes,
+            7 => Relation::Excludes,
+            _ => {
+                return Err(PmcError::InvalidValue {
+                    offset: relation_offset,
+                });
+            }
         };
+        let action_offset = reader.offset;
         let action = match reader.u8()? {
             0 => Action::Exclude,
-            _ => Action::Include,
+            1 => Action::Include,
+            _ => {
+                return Err(PmcError::InvalidValue {
+                    offset: action_offset,
+                });
+            }
         };
         let value_size = reader.u32()? as usize;
         let value_offset = reader.offset;
@@ -109,8 +123,16 @@ pub fn decode_filter_rules(data: &[u8]) -> Result<Vec<FilterRule>, PmcError> {
             value,
         });
     }
+    if reader.offset != data.len() {
+        return Err(PmcError::InvalidSize {
+            offset: reader.offset,
+        });
+    }
     Ok(rules)
 }
+
+/// Constant first byte of the rule list (procmon-parser: `Const(1, Int8ul)`, meaning unknown).
+const RULES_MARKER: u8 = 1;
 
 /// Bounds-checked little-endian cursor.
 struct Reader<'a> {
@@ -189,6 +211,71 @@ mod tests {
                 action: Action::Exclude,
                 value: "Procmon.exe".to_string(),
             }])
+        );
+    }
+
+    #[test]
+    fn leading_byte_other_than_1_is_invalid() {
+        assert_eq!(
+            decode_filter_rules(&[2, 0, 0, 0, 0]),
+            Err(PmcError::InvalidValue { offset: 0 })
+        );
+    }
+
+    #[test]
+    fn unknown_relation_is_invalid() {
+        let data = rule_list(&[rule_bytes(40053, 8, 0, "x", 0)]);
+
+        assert_eq!(
+            decode_filter_rules(&data),
+            Err(PmcError::InvalidValue { offset: 5 + 4 })
+        );
+    }
+
+    #[test]
+    fn unknown_action_is_invalid() {
+        let data = rule_list(&[rule_bytes(40053, 0, 2, "x", 0)]);
+
+        assert_eq!(
+            decode_filter_rules(&data),
+            Err(PmcError::InvalidValue { offset: 5 + 8 })
+        );
+    }
+
+    #[test]
+    fn value_without_nul_terminator_is_invalid() {
+        let mut rule = rule_bytes(40053, 0, 0, "x", 0);
+        // Shrink the declared size by one UTF-16 unit so the NUL falls outside the value.
+        rule[9..13].copy_from_slice(&2u32.to_le_bytes());
+        rule.drain(15..17);
+        let data = rule_list(&[rule]);
+
+        assert_eq!(
+            decode_filter_rules(&data),
+            Err(PmcError::InvalidString { offset: 5 + 13 })
+        );
+    }
+
+    #[test]
+    fn count_larger_than_the_rules_present_is_truncated() {
+        let mut data = rule_list(&[rule_bytes(40053, 0, 0, "x", 0)]);
+        data[1] = 2;
+
+        assert_eq!(
+            decode_filter_rules(&data),
+            Err(PmcError::Truncated { offset: data.len() })
+        );
+    }
+
+    #[test]
+    fn bytes_after_the_last_rule_are_invalid() {
+        let mut data = rule_list(&[rule_bytes(40053, 0, 0, "x", 0)]);
+        let end = data.len();
+        data.push(0);
+
+        assert_eq!(
+            decode_filter_rules(&data),
+            Err(PmcError::InvalidSize { offset: end })
         );
     }
 }

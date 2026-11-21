@@ -26,10 +26,12 @@ pub struct Configuration {
 pub enum PmcError {
     /// The input ends inside the structure that starts at `offset`.
     Truncated { offset: usize },
-    /// The size fields of the record at `offset` are inconsistent.
+    /// The sizes at `offset` disagree with each other or with the data that follows.
     InvalidSize { offset: usize },
     /// The string at `offset` is not NUL-terminated UTF-16LE without interior NULs.
     InvalidString { offset: usize },
+    /// The field at `offset` holds a value outside its known set.
+    InvalidValue { offset: usize },
 }
 
 impl fmt::Display for PmcError {
@@ -39,10 +41,10 @@ impl fmt::Display for PmcError {
                 write!(f, "PMC data ends inside the structure at offset {offset}")
             }
             PmcError::InvalidSize { offset } => {
-                write!(
-                    f,
-                    "inconsistent size fields in the PMC record at offset {offset}"
-                )
+                write!(f, "inconsistent sizes in PMC data at offset {offset}")
+            }
+            PmcError::InvalidValue { offset } => {
+                write!(f, "unknown value in PMC data at offset {offset}")
             }
             PmcError::InvalidString { offset } => {
                 write!(f, "invalid UTF-16 string in PMC data at offset {offset}")
