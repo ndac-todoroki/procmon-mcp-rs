@@ -79,24 +79,42 @@ pub fn parse(bytes: &[u8]) -> Result<Configuration, PmcError> {
     let mut records = Vec::new();
     let mut offset = 0;
     while offset < bytes.len() {
-        if bytes.len() - offset < HEADER_SIZE {
-            return Err(PmcError::Truncated { offset });
-        }
-        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-        let record_size = u32_at(offset) as usize;
-        let header_and_name_size = u32_at(offset + 8) as usize;
-        let data_size = u32_at(offset + 12) as usize;
-        let name_units: Vec<u16> = bytes[offset + HEADER_SIZE..offset + header_and_name_size]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
-        let name = String::from_utf16(&name_units[..name_units.len() - 1]).unwrap();
-        let data_start = offset + header_and_name_size;
-        let data = bytes[data_start..data_start + data_size].to_vec();
-        records.push(Record { name, data });
+        let (record, record_size) = parse_record(&bytes[offset..], offset)?;
+        records.push(record);
         offset += record_size;
     }
     Ok(Configuration { records })
+}
+
+/// Parses the record at the start of `rest`; `offset` is only used for error reporting.
+fn parse_record(rest: &[u8], offset: usize) -> Result<(Record, usize), PmcError> {
+    let truncated = PmcError::Truncated { offset };
+    let header = rest.get(..HEADER_SIZE).ok_or(truncated.clone())?;
+    let field = |index: usize| {
+        let at = index * 4;
+        u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]]) as usize
+    };
+    let record_size = field(0);
+    let header_and_name_size = field(2);
+    let data_size = field(3);
+
+    let name_bytes = rest
+        .get(HEADER_SIZE..header_and_name_size)
+        .ok_or(truncated.clone())?;
+    let data_end = header_and_name_size
+        .checked_add(data_size)
+        .ok_or(truncated.clone())?;
+    let data = rest
+        .get(header_and_name_size..data_end)
+        .ok_or(truncated)?
+        .to_vec();
+
+    let name_units: Vec<u16> = name_bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    let name = String::from_utf16(&name_units[..name_units.len() - 1]).unwrap();
+    Ok((Record { name, data }, record_size))
 }
 
 const HEADER_SIZE: usize = 0x10;
@@ -177,5 +195,21 @@ mod tests {
                 offset: second_record
             })
         );
+    }
+
+    #[test]
+    fn record_whose_data_runs_past_the_end_is_truncated() {
+        let mut bytes = record_bytes("Profiling", &[1, 0, 0, 0]);
+        bytes.truncate(bytes.len() - 2);
+
+        assert_eq!(parse(&bytes), Err(PmcError::Truncated { offset: 0 }));
+    }
+
+    #[test]
+    fn record_whose_name_runs_past_the_end_is_truncated() {
+        let mut bytes = record_bytes("Profiling", &[]);
+        bytes.truncate(HEADER_SIZE + 4);
+
+        assert_eq!(parse(&bytes), Err(PmcError::Truncated { offset: 0 }));
     }
 }
