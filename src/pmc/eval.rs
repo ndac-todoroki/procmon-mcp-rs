@@ -1,6 +1,7 @@
 //! Applying filter rules to an event, independently of where the event comes from.
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
 
 use super::filter::{Action, Column, FilterRule, Relation};
 
@@ -32,7 +33,20 @@ fn matches<S: FilterSubject + ?Sized>(rule: &FilterRule, subject: &S) -> bool {
         Relation::EndsWith => actual.ends_with(&expected),
         Relation::Contains => actual.contains(&expected),
         Relation::Excludes => !actual.contains(&expected),
-        Relation::LessThan | Relation::MoreThan => false,
+        Relation::LessThan => compare(&actual, &expected) == Some(Ordering::Less),
+        Relation::MoreThan => compare(&actual, &expected) == Some(Ordering::Greater),
+    }
+}
+
+/// Numeric order when both sides are finite numbers, else text order of the lowercased text.
+///
+/// Procmon's own rule is undocumented. Parsing per column type (durations, times,
+/// hex values) is not attempted; plain decimal numbers cover PID, TID and Duration.
+fn compare(actual: &str, expected: &str) -> Option<Ordering> {
+    let number = |text: &str| text.trim().parse::<f64>().ok().filter(|n| n.is_finite());
+    match (number(actual), number(expected)) {
+        (Some(a), Some(b)) => a.partial_cmp(&b),
+        _ => Some(actual.cmp(expected)),
     }
 }
 
@@ -131,6 +145,41 @@ mod tests {
             let included = is_included(&rules, &event(&[(Column::PATH, path)]));
 
             assert_eq!(included, !should_match, "{relation:?} {value}");
+        }
+    }
+
+    #[test]
+    fn ordering_relations_compare_numerically_when_both_sides_are_numbers() {
+        // As text "900" sorts after "1000"; numerically it is smaller.
+        let cases = [
+            (Column::PID, "900", Relation::LessThan, "1000", true),
+            (Column::PID, "900", Relation::MoreThan, "1000", false),
+            (Column::PID, "1000", Relation::LessThan, "1000", false),
+            (Column::PID, "1000", Relation::MoreThan, "1000", false),
+            (Column::DURATION, "0.5", Relation::MoreThan, "0.25", true),
+        ];
+        for (column, actual, relation, value, should_match) in cases {
+            let rules = [exclude(column, relation, value)];
+
+            let included = is_included(&rules, &event(&[(column, actual)]));
+
+            assert_eq!(included, !should_match, "{actual} {relation:?} {value}");
+        }
+    }
+
+    #[test]
+    fn ordering_relations_fall_back_to_case_insensitive_text_order() {
+        let cases = [
+            ("apple", Relation::LessThan, "Banana", true),
+            ("apple", Relation::MoreThan, "Banana", false),
+            ("10 ms", Relation::LessThan, "9 ms", true),
+        ];
+        for (actual, relation, value, should_match) in cases {
+            let rules = [exclude(Column::DETAIL, relation, value)];
+
+            let included = is_included(&rules, &event(&[(Column::DETAIL, actual)]));
+
+            assert_eq!(included, !should_match, "{actual} {relation:?} {value}");
         }
     }
 }
