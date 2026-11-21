@@ -11,13 +11,18 @@ use windows::Win32::Foundation::{HANDLE, HLOCAL};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows::Win32::Security::{
-    GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
+    GetTokenInformation, LookupAccountNameW, PSID, SID_NAME_USE, TOKEN_ELEVATION, TOKEN_QUERY,
+    TOKEN_USER, TokenElevation, TokenUser,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::RemoteDesktop::{
+    WTS_CURRENT_SESSION, WTS_INFO_CLASS, WTSDomainName, WTSFreeMemory, WTSQuerySessionInformationW,
+    WTSUserName,
+};
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::Shell::{FOLDERID_ProgramData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
-use windows::core::{Owned, PWSTR};
+use windows::core::{HSTRING, Owned, PWSTR};
 
 /// Whether this process runs with an elevated (administrator) token.
 pub fn is_elevated() -> io::Result<bool> {
@@ -55,9 +60,62 @@ pub fn current_user_sid() -> io::Result<String> {
         )
     }?;
     let user = buf.as_ptr().cast::<TOKEN_USER>();
-    let mut text = PWSTR::null();
     // SAFETY: the SID pointer refers into `buf`, alive for the call.
-    unsafe { ConvertSidToStringSidW((*user).User.Sid, &mut text) }?;
+    unsafe { sid_string((*user).User.Sid) }
+}
+
+/// The SID of the user signed in to this process's session.
+///
+/// Differs from [`current_user_sid`] when the process was elevated with another
+/// account's credentials.
+pub fn signed_in_user_sid() -> io::Result<String> {
+    let domain = session_string(WTSDomainName)?;
+    let user = session_string(WTSUserName)?;
+    if user.is_empty() {
+        return Err(io::Error::other("no user is signed in to this session"));
+    }
+    let account = HSTRING::from(format!(r"{domain}\{user}"));
+    let mut sid = [0u64; 32];
+    let mut sid_len = size_of_val(&sid) as u32;
+    let mut referenced = [0u16; 256];
+    let mut referenced_len = referenced.len() as u32;
+    let mut kind = SID_NAME_USE::default();
+    // SAFETY: both buffers are writable and their sizes are passed.
+    unsafe {
+        LookupAccountNameW(
+            None,
+            &account,
+            Some(PSID(sid.as_mut_ptr().cast())),
+            &mut sid_len,
+            Some(PWSTR(referenced.as_mut_ptr())),
+            &mut referenced_len,
+            &mut kind,
+        )?;
+        sid_string(PSID(sid.as_mut_ptr().cast()))
+    }
+}
+
+/// One string property of this process's Remote Desktop / console session.
+fn session_string(class: WTS_INFO_CLASS) -> io::Result<String> {
+    let mut text = PWSTR::null();
+    let mut bytes = 0u32;
+    // SAFETY: on success the buffer is a NUL-terminated string that we free after copying.
+    unsafe {
+        WTSQuerySessionInformationW(None, WTS_CURRENT_SESSION, class, &mut text, &mut bytes)?;
+        let copied = text.to_string();
+        WTSFreeMemory(text.0.cast());
+        copied.map_err(io::Error::other)
+    }
+}
+
+/// `S-1-…` for a valid SID.
+///
+/// # Safety
+/// `sid` must point to a valid SID for the duration of the call.
+unsafe fn sid_string(sid: PSID) -> io::Result<String> {
+    let mut text = PWSTR::null();
+    // SAFETY: the caller guarantees the SID.
+    unsafe { ConvertSidToStringSidW(sid, &mut text) }?;
     // SAFETY: a successful conversion returns a NUL-terminated string allocated with
     // LocalAlloc, which we take over and free after copying.
     let sid = unsafe {
@@ -128,6 +186,11 @@ mod tests {
         let expected = format!(r"{}\System32", std::env::var("SystemRoot").unwrap());
         let actual = system_dir().unwrap();
         assert!(same_dir(&actual, &expected), "{actual:?} vs {expected}");
+    }
+
+    #[test]
+    fn signed_in_user_is_the_process_user_when_not_elevated_as_someone_else() {
+        assert_eq!(signed_in_user_sid().unwrap(), current_user_sid().unwrap());
     }
 
     #[test]

@@ -33,6 +33,9 @@ pub fn install(options: &InstallOptions) -> Result<(), String> {
     }
     eprintln!();
     let user = win::current_user_sid().map_err(|e| format!("cannot identify the user: {e}"))?;
+    let signed_in = win::signed_in_user_sid()
+        .map_err(|e| format!("cannot identify the signed-in user: {e}"))?;
+    ensure_signed_in_user(&user, &signed_in)?;
 
     step(
         style,
@@ -156,10 +159,12 @@ pub fn ensure_signed_in_user(elevated_sid: &str, signed_in_sid: &str) -> Result<
     if elevated_sid == signed_in_sid {
         Ok(())
     } else {
-        Err("procmon-mcp can only be installed by the signed-in user, who must be an \
+        Err(
+            "procmon-mcp can only be installed by the signed-in user, who must be an \
              administrator; this was elevated with another account's credentials. \
              Sign in with an administrator account and run it again"
-            .to_owned())
+                .to_owned(),
+        )
     }
 }
 
@@ -382,7 +387,10 @@ mod tests {
 
     #[test]
     fn accepts_an_elevation_by_the_signed_in_user() {
-        assert_eq!(ensure_signed_in_user("S-1-5-21-1-1001", "S-1-5-21-1-1001"), Ok(()));
+        assert_eq!(
+            ensure_signed_in_user("S-1-5-21-1-1001", "S-1-5-21-1-1001"),
+            Ok(())
+        );
     }
 
     #[test]

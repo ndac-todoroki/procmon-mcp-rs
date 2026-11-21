@@ -12,4 +12,6 @@ pub use console::enable_ansi_on_stderr;
 pub use process::{find_procmon, running_image_names};
 pub use registry::{KeySnapshot, RegValue, restore_hkcu, snapshot_hkcu};
 pub use signature::{SignatureError, verify_microsoft_signature};
-pub use system::{current_user_sid, is_elevated, program_data_dir, random_bytes, system_dir};
+pub use system::{
+    current_user_sid, is_elevated, program_data_dir, random_bytes, signed_in_user_sid, system_dir,
+};
