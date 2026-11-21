@@ -130,6 +130,20 @@ fn capture(layout: &Layout, request: &CaptureRequest, job_dir: &Path) -> Result<
     std::fs::write(job_dir.join(CONFIG_FILE), config.to_bytes())
         .map_err(|e| format!("cannot write the Procmon configuration: {e}"))?;
 
+    // Procmon saves the configuration it ran with into the user's GUI settings on exit;
+    // put the user's own settings back whatever happens to the capture.
+    let settings = win::snapshot_hkcu(PROCMON_SETTINGS_KEY)
+        .map_err(|e| format!("cannot save the Process Monitor settings: {e}"))?;
+    let outcome = run_procmon(layout, request, job_dir);
+    let restored = win::restore_hkcu(PROCMON_SETTINGS_KEY, &settings)
+        .map_err(|e| format!("cannot restore the Process Monitor settings: {e}"));
+    outcome.and(restored)
+}
+
+/// Where Process Monitor keeps the user's GUI settings.
+pub const PROCMON_SETTINGS_KEY: &str = r"Software\Sysinternals\Process Monitor";
+
+fn run_procmon(layout: &Layout, request: &CaptureRequest, job_dir: &Path) -> Result<(), String> {
     let mut procmon = Command::new(layout.procmon())
         .args(procmon_args(job_dir, request.duration_s))
         .spawn()
