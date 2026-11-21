@@ -64,6 +64,15 @@ impl std::error::Error for CaptureFilterError {}
 /// Records other than `FilterRules` and `DestructiveFilter` mirror a Procmon 4.13 GUI
 /// export with default settings, in the same order. If Procmon writes loaded settings
 /// back to the user's profile, defaults are the least surprising values to leave there.
+/// Points Procmon at the system's own dbghelp.dll. The exported default names
+/// `C:\WINDOWS`, which is wrong when Windows is installed elsewhere.
+pub fn set_dbghelp_path(config: &mut Configuration, path: &std::path::Path) {
+    if let Some(record) = config.records.iter_mut().find(|r| r.name == "DbgHelpPath") {
+        // Stored without a terminating NUL, like Procmon's own export.
+        record.data = utf16(&path.to_string_lossy());
+    }
+}
+
 pub fn capture_configuration(filter: &CaptureFilter) -> Result<Configuration, CaptureFilterError> {
     validate(filter)?;
     let mut rules = default_filter_rules();
@@ -235,6 +244,22 @@ fn u32_array(values: &[u32], len: usize) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::pmc::decode_filter_rules;
+
+    #[test]
+    fn dbghelp_path_can_point_at_the_actual_system_directory() {
+        let mut config = capture_configuration(&CaptureFilter::default()).unwrap();
+        let names_before: Vec<_> = config.records.iter().map(|r| r.name.clone()).collect();
+        set_dbghelp_path(
+            &mut config,
+            std::path::Path::new(r"D:\Win\System32\dbghelp.dll"),
+        );
+        assert_eq!(
+            config.data("DbgHelpPath"),
+            Some(utf16(r"D:\Win\System32\dbghelp.dll").as_slice())
+        );
+        let names_after: Vec<_> = config.records.iter().map(|r| r.name.clone()).collect();
+        assert_eq!(names_before, names_after);
+    }
 
     fn u32_value(config: &Configuration, name: &str) -> u32 {
         let data = config

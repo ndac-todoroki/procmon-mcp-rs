@@ -11,6 +11,7 @@ mod record;
 
 pub use capture::{
     CaptureFilter, CaptureFilterError, MAX_OPERATIONS, MAX_TEXT_UNITS, capture_configuration,
+    set_dbghelp_path,
 };
 pub use defaults::default_filter_rules;
 pub use eval::{FilterSubject, is_included};
