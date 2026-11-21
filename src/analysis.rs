@@ -14,6 +14,44 @@ pub struct Filter {
     pub path_contains: Option<String>,
 }
 
+impl Filter {
+    fn lowercased(self) -> Filter {
+        Filter {
+            process_name: self.process_name.map(|s| s.to_lowercase()),
+            pid: self.pid,
+            operations: self.operations.iter().map(|s| s.to_lowercase()).collect(),
+            path_contains: self.path_contains.map(|s| s.to_lowercase()),
+        }
+    }
+
+    /// Expects a filter already passed through `lowercased`.
+    fn matches(&self, event: &Event, process: Option<&Process>) -> bool {
+        if let Some(name) = &self.process_name
+            && process.is_none_or(|p| p.name.to_lowercase() != *name)
+        {
+            return false;
+        }
+        if let Some(pid) = self.pid
+            && process.is_none_or(|p| p.pid != pid)
+        {
+            return false;
+        }
+        if !self.operations.is_empty() {
+            let op = event.operation_name().to_lowercase();
+            if !self.operations.contains(&op) {
+                return false;
+            }
+        }
+        if let Some(needle) = &self.path_contains {
+            let path = event.path.as_deref().unwrap_or("").to_lowercase();
+            if !path.contains(needle.as_str()) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 /// Counts sorted by descending count, ties broken by key.
 pub type Ranking = Vec<(String, u64)>;
 
@@ -32,16 +70,16 @@ pub struct Summarizer {
 impl Summarizer {
     pub fn new(filter: Filter) -> Self {
         Summarizer {
-            filter,
+            filter: filter.lowercased(),
             total: 0,
             by_operation: HashMap::new(),
         }
     }
 
-    pub fn add(&mut self, event: &Event, _process: Option<&Process>) {
+    pub fn add(&mut self, event: &Event, process: Option<&Process>) {
         // Procmon emits profiling events every second regardless of the filter; they
         // describe Procmon's sampling, not what the process did.
-        if event.class == EventClass::Profiling {
+        if event.class == EventClass::Profiling || !self.filter.matches(event, process) {
             return;
         }
         self.total += 1;
@@ -133,5 +171,70 @@ mod tests {
                 ("CreateFile".to_owned(), 1)
             ]
         );
+    }
+
+    fn mixed_events() -> Vec<(Event, Process)> {
+        vec![
+            (fs(READ_FILE, r"C:\App\user.cfg", 0), process("App.exe", 10)),
+            (
+                fs(CREATE_FILE, r"C:\App\user.cfg", 1),
+                process("App.exe", 10),
+            ),
+            (
+                fs(READ_FILE, r"C:\Other\log.txt", 2),
+                process("App.exe", 11),
+            ),
+            (
+                fs(READ_FILE, r"C:\App\user.cfg", 3),
+                process("other.exe", 20),
+            ),
+        ]
+    }
+
+    #[test]
+    fn filters_by_process_name_ignoring_case() {
+        let filter = Filter {
+            process_name: Some("app.EXE".into()),
+            ..Filter::default()
+        };
+        assert_eq!(summarize(filter, &mixed_events()).total, 3);
+    }
+
+    #[test]
+    fn filters_by_pid() {
+        let filter = Filter {
+            pid: Some(11),
+            ..Filter::default()
+        };
+        assert_eq!(summarize(filter, &mixed_events()).total, 1);
+    }
+
+    #[test]
+    fn filters_by_any_of_the_operations_ignoring_case() {
+        let filter = Filter {
+            operations: vec!["createfile".into(), "WriteFile".into()],
+            ..Filter::default()
+        };
+        assert_eq!(summarize(filter, &mixed_events()).total, 1);
+    }
+
+    #[test]
+    fn filters_by_path_substring_ignoring_case() {
+        let filter = Filter {
+            path_contains: Some("USER.CFG".into()),
+            ..Filter::default()
+        };
+        assert_eq!(summarize(filter, &mixed_events()).total, 3);
+    }
+
+    #[test]
+    fn combines_conditions_with_and() {
+        let filter = Filter {
+            process_name: Some("App.exe".into()),
+            path_contains: Some("user.cfg".into()),
+            operations: vec!["ReadFile".into()],
+            ..Filter::default()
+        };
+        assert_eq!(summarize(filter, &mixed_events()).total, 1);
     }
 }
