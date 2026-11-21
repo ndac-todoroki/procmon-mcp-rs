@@ -1,7 +1,7 @@
 //! Building the configuration that a capture run loads with `/LoadConfig`.
 
 use super::defaults::default_filter_rules;
-use super::filter::{Column, encode_filter_rules};
+use super::filter::{Action, Column, FilterRule, Relation, encode_filter_rules};
 use super::record::{Configuration, Record};
 
 /// Conditions of one capture. Unset conditions do not narrow the capture.
@@ -24,8 +24,9 @@ pub enum CaptureFilterError {}
 /// Records other than `FilterRules` and `DestructiveFilter` mirror a Procmon 4.13 GUI
 /// export with default settings, in the same order. If Procmon writes loaded settings
 /// back to the user's profile, defaults are the least surprising values to leave there.
-pub fn capture_configuration(_filter: &CaptureFilter) -> Result<Configuration, CaptureFilterError> {
-    let rules = default_filter_rules();
+pub fn capture_configuration(filter: &CaptureFilter) -> Result<Configuration, CaptureFilterError> {
+    let mut rules = default_filter_rules();
+    rules.extend(include_rules(filter));
     let records = vec![
         record("Columns", u16_array(&DEFAULT_COLUMN_WIDTHS, 64)),
         u32_record("ColumnCount", DEFAULT_COLUMNS.len() as u32),
@@ -59,6 +60,32 @@ pub fn capture_configuration(_filter: &CaptureFilter) -> Result<Configuration, C
         u32_record("RingBufferMin", 0),
     ];
     Ok(Configuration { records })
+}
+
+fn include_rules(filter: &CaptureFilter) -> Vec<FilterRule> {
+    let include = |column, relation, value: &str| FilterRule {
+        column,
+        relation,
+        action: Action::Include,
+        value: value.to_string(),
+    };
+    let mut rules = Vec::new();
+    if let Some(name) = &filter.process_name {
+        rules.push(include(Column::PROCESS_NAME, Relation::Is, name));
+    }
+    if let Some(pid) = filter.pid {
+        rules.push(include(Column::PID, Relation::Is, &pid.to_string()));
+    }
+    for operation in &filter.operations {
+        rules.push(include(Column::OPERATION, Relation::Is, operation));
+    }
+    if let Some(path) = &filter.path_contains {
+        rules.push(include(Column::PATH, Relation::Contains, path));
+    }
+    if let Some(result) = &filter.result {
+        rules.push(include(Column::RESULT, Relation::Is, result));
+    }
+    rules
 }
 
 /// Procmon's default columns: Time of Day, Process Name, PID, Operation, Path, Result, Detail.
@@ -152,6 +179,43 @@ mod tests {
         assert_eq!(rules, default_filter_rules());
         assert_eq!(u32_value(&config, "DestructiveFilter"), 1);
         assert_eq!(u32_value(&config, "Profiling"), 0);
+    }
+
+    fn filter_rules(config: &Configuration) -> Vec<FilterRule> {
+        decode_filter_rules(config.data("FilterRules").unwrap()).unwrap()
+    }
+
+    fn include(column: Column, relation: Relation, value: &str) -> FilterRule {
+        FilterRule {
+            column,
+            relation,
+            action: Action::Include,
+            value: value.to_string(),
+        }
+    }
+
+    #[test]
+    fn each_condition_appends_an_include_rule_after_the_defaults() {
+        let filter = CaptureFilter {
+            process_name: Some("HuionTablet.exe".to_string()),
+            pid: Some(1234),
+            operations: vec!["ReadFile".to_string(), "CreateFile".to_string()],
+            path_contains: Some("user.cfg".to_string()),
+            result: Some("NAME NOT FOUND".to_string()),
+        };
+
+        let config = capture_configuration(&filter).unwrap();
+
+        let mut expected = default_filter_rules();
+        expected.extend([
+            include(Column::PROCESS_NAME, Relation::Is, "HuionTablet.exe"),
+            include(Column::PID, Relation::Is, "1234"),
+            include(Column::OPERATION, Relation::Is, "ReadFile"),
+            include(Column::OPERATION, Relation::Is, "CreateFile"),
+            include(Column::PATH, Relation::Contains, "user.cfg"),
+            include(Column::RESULT, Relation::Is, "NAME NOT FOUND"),
+        ]);
+        assert_eq!(filter_rules(&config), expected);
     }
 
     #[test]
