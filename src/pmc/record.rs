@@ -23,11 +23,18 @@ pub struct Configuration {
 
 /// Error returned when PMC bytes are malformed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PmcError {}
+pub enum PmcError {
+    /// The input ends inside the structure that starts at `offset`.
+    Truncated { offset: usize },
+}
 
 impl fmt::Display for PmcError {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {}
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PmcError::Truncated { offset } => {
+                write!(f, "PMC data ends inside the structure at offset {offset}")
+            }
+        }
     }
 }
 
@@ -72,6 +79,9 @@ pub fn parse(bytes: &[u8]) -> Result<Configuration, PmcError> {
     let mut records = Vec::new();
     let mut offset = 0;
     while offset < bytes.len() {
+        if bytes.len() - offset < HEADER_SIZE {
+            return Err(PmcError::Truncated { offset });
+        }
         let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         let record_size = u32_at(offset) as usize;
         let header_and_name_size = u32_at(offset + 8) as usize;
@@ -153,5 +163,19 @@ mod tests {
         };
 
         assert_eq!(config.to_bytes(), bytes);
+    }
+
+    #[test]
+    fn input_ending_inside_a_record_header_is_truncated() {
+        let mut bytes = record_bytes("Logfile", &[]);
+        let second_record = bytes.len();
+        bytes.extend_from_slice(&[0x20, 0, 0, 0, 0x10, 0, 0, 0]);
+
+        assert_eq!(
+            parse(&bytes),
+            Err(PmcError::Truncated {
+                offset: second_record
+            })
+        );
     }
 }
