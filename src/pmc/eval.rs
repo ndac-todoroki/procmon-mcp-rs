@@ -21,8 +21,12 @@ fn matches<S: FilterSubject + ?Sized>(rule: &FilterRule, subject: &S) -> bool {
     let Some(actual) = subject.value(rule.column) else {
         return false;
     };
+    // Lowercasing (Unicode, not just ASCII) stands in for Windows' case-insensitive
+    // comparison; exact parity with its uppercase table is not worth a dependency.
+    let actual = actual.to_lowercase();
+    let expected = rule.value.to_lowercase();
     match rule.relation {
-        Relation::Is => actual == rule.value,
+        Relation::Is => actual == expected,
         _ => false,
     }
 }
@@ -82,5 +86,20 @@ mod tests {
             &event(&[(Column::PROCESS_NAME, "Systemd")])
         ));
         assert!(is_included(&rules, &event(&[(Column::PATH, "System")])));
+    }
+
+    #[test]
+    fn string_comparison_ignores_case_including_non_ascii() {
+        let rules = [
+            exclude(Column::PROCESS_NAME, Relation::Is, "Procmon.exe"),
+            exclude(Column::PATH, Relation::Is, "C:\\Ünïcode"),
+        ];
+
+        for (column, value) in [
+            (Column::PROCESS_NAME, "PROCMON.EXE"),
+            (Column::PATH, "c:\\üNÏCODE"),
+        ] {
+            assert!(!is_included(&rules, &event(&[(column, value)])), "{value}");
+        }
     }
 }
