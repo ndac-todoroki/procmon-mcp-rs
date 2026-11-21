@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::download::{self, Endpoint, Fetch};
 use crate::layout::{self, Layout};
-use crate::task::{self, Action};
+use crate::task;
 use crate::win;
 
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
@@ -73,8 +73,8 @@ pub fn update() -> Result<UpdateOutcome, String> {
 pub fn uninstall() -> Result<(), String> {
     require_elevated()?;
     let layout = Layout::system().map_err(|e| format!("cannot locate ProgramData: {e}"))?;
-    if task::schtasks(Action::Query).is_ok() {
-        task::schtasks(Action::Delete).map_err(|e| e.to_string())?;
+    if task::exists().map_err(|e| format!("cannot query the scheduled task: {e}"))? {
+        task::delete().map_err(|e| format!("cannot remove the scheduled task: {e}"))?;
         eprintln!("Removed the scheduled task {}", task::TASK_NAME);
     }
     match std::fs::symlink_metadata(&layout.root) {
@@ -214,17 +214,8 @@ fn update_procmon(layout: &Layout) -> Result<UpdateOutcome, String> {
 }
 
 fn register_task(layout: &Layout, user: &str) -> Result<(), String> {
-    // Written into bin, where only administrators can write, so it cannot be swapped
-    // between writing and schtasks reading it.
-    let xml_file = layout.bin().join("task.xml");
-    let xml = task::task_xml(&layout.server(), user);
-    std::fs::write(&xml_file, task::encode_utf16_with_bom(&xml))
-        .map_err(|e| format!("cannot write {}: {e}", xml_file.display()))?;
-    let result = task::schtasks(Action::Register {
-        xml_file: &xml_file,
-    });
-    let _ = std::fs::remove_file(&xml_file);
-    result.map_err(|e| e.to_string())
+    task::register(&task::task_xml(&layout.server(), user))
+        .map_err(|e| format!("cannot register the scheduled task: {e}"))
 }
 
 /// The `mcpServers` entry that starts the installed server.

@@ -1,59 +1,83 @@
-//! The scheduled task that starts the runner elevated, and the `schtasks.exe` calls that
-//! manage it. The Task Scheduler API is COM-only, so the documented XML form is used.
+//! The scheduled task that starts the runner elevated, managed through the Task
+//! Scheduler COM API. The definition is passed as XML text, so nothing is written to disk.
 
-use std::ffi::OsString;
 use std::io;
 use std::path::Path;
-use std::process::Command;
+
+use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+};
+use windows::Win32::System::TaskScheduler::{
+    ITaskFolder, ITaskService, TASK_CREATE_OR_UPDATE, TASK_LOGON_INTERACTIVE_TOKEN, TaskScheduler,
+};
+use windows::Win32::System::Variant::VARIANT;
+use windows::core::{BSTR, HRESULT};
 
 pub const TASK_NAME: &str = "ProcmonMcpCapture";
 
-/// What to ask `schtasks.exe` to do with our task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action<'a> {
-    /// Create or replace the task from an XML file.
-    Register {
-        xml_file: &'a Path,
-    },
-    Run,
-    Delete,
-    Query,
+/// Creates or replaces our task from `xml` (see [`task_xml`]). Needs elevation.
+pub fn register(xml: &str) -> io::Result<()> {
+    let none = VARIANT::default();
+    // SAFETY: COM calls on interfaces obtained from the connected service.
+    unsafe {
+        root_folder()?.RegisterTask(
+            &BSTR::from(TASK_NAME),
+            &BSTR::from(xml),
+            TASK_CREATE_OR_UPDATE.0,
+            &none,
+            &none,
+            TASK_LOGON_INTERACTIVE_TOKEN,
+            &none,
+        )?;
+    }
+    Ok(())
 }
 
-/// Arguments for `schtasks.exe`.
-pub fn schtasks_args(action: Action<'_>) -> Vec<OsString> {
-    let task = ["/TN", TASK_NAME].map(OsString::from);
-    let mut args: Vec<OsString> = match action {
-        Action::Register { .. } => vec!["/Create".into()],
-        Action::Run => vec!["/Run".into()],
-        Action::Delete => vec!["/Delete".into()],
-        Action::Query => vec!["/Query".into()],
-    };
-    args.extend(task);
-    match action {
-        Action::Register { xml_file } => {
-            args.extend(["/XML".into(), xml_file.as_os_str().to_owned(), "/F".into()]);
-        }
-        // Without /F, schtasks asks for confirmation on the console.
-        Action::Delete => args.push("/F".into()),
-        Action::Run | Action::Query => {}
+/// Starts our task now. Allowed for the installing user by the task's security descriptor.
+pub fn run() -> io::Result<()> {
+    // SAFETY: COM calls on interfaces obtained from the connected service.
+    unsafe {
+        root_folder()?
+            .GetTask(&BSTR::from(TASK_NAME))?
+            .Run(&VARIANT::default())?;
     }
-    args
+    Ok(())
 }
 
-/// Runs `schtasks.exe` from System32 (never from PATH) and fails unless it exits 0.
-pub fn schtasks(action: Action<'_>) -> io::Result<()> {
-    let exe = crate::win::system_dir()?.join("schtasks.exe");
-    let output = Command::new(exe).args(schtasks_args(action)).output()?;
-    if output.status.success() {
-        return Ok(());
+/// Removes our task. Needs elevation.
+pub fn delete() -> io::Result<()> {
+    // SAFETY: COM call on an interface obtained from the connected service.
+    unsafe { root_folder()?.DeleteTask(&BSTR::from(TASK_NAME), 0)? };
+    Ok(())
+}
+
+/// Whether our task is registered.
+pub fn exists() -> io::Result<bool> {
+    task_exists(TASK_NAME)
+}
+
+fn task_exists(name: &str) -> io::Result<bool> {
+    // SAFETY: COM call on an interface obtained from the connected service.
+    match unsafe { root_folder()?.GetTask(&BSTR::from(name)) } {
+        Ok(_) => Ok(true),
+        Err(e) if e.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => Ok(false),
+        Err(e) => Err(e.into()),
     }
-    // schtasks writes localized text in the console code page; keep it best effort.
-    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(io::Error::other(format!(
-        "schtasks {action:?} failed ({}): {detail}",
-        output.status
-    )))
+}
+
+/// The root folder (`\`) of the local Task Scheduler.
+fn root_folder() -> io::Result<ITaskFolder> {
+    let none = VARIANT::default();
+    // SAFETY: COM is initialized on this thread before the service is created. A thread
+    // already in the multithreaded apartment gets S_FALSE, which is fine; the matching
+    // uninitialize is left to process exit.
+    unsafe {
+        CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+        let service: ITaskService = CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER)?;
+        service.Connect(&none, &none, &none, &none)?;
+        Ok(service.GetFolder(&BSTR::from("\\"))?)
+    }
 }
 
 /// Longest a runner may live: the longest capture plus generous setup and shutdown time.
@@ -99,14 +123,6 @@ pub fn task_xml(server_exe: &Path, user_sid: &str) -> String {
 </Task>
 "#
     )
-}
-
-/// UTF-16LE with a byte order mark, the encoding the XML declares.
-pub fn encode_utf16_with_bom(text: &str) -> Vec<u8> {
-    [0xFF, 0xFE]
-        .into_iter()
-        .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
-        .collect()
 }
 
 fn xml_escape(s: &str) -> String {
@@ -184,39 +200,16 @@ mod tests {
         );
     }
 
-    fn args(action: Action<'_>) -> Vec<String> {
-        schtasks_args(action)
-            .into_iter()
-            .map(|a| a.into_string().unwrap())
-            .collect()
-    }
-
     #[test]
-    fn schtasks_arguments_name_our_task_for_every_action() {
-        assert_eq!(
-            args(Action::Register {
-                xml_file: Path::new(r"C:\ProgramData\ProcmonMcp\bin\task.xml")
-            }),
-            [
-                "/Create",
-                "/TN",
-                TASK_NAME,
-                "/XML",
-                r"C:\ProgramData\ProcmonMcp\bin\task.xml",
-                "/F"
-            ]
-        );
-        assert_eq!(args(Action::Run), ["/Run", "/TN", TASK_NAME]);
-        assert_eq!(args(Action::Delete), ["/Delete", "/TN", TASK_NAME, "/F"]);
-        assert_eq!(args(Action::Query), ["/Query", "/TN", TASK_NAME]);
-    }
-
-    #[test]
-    fn declares_utf16_and_encodes_with_a_bom() {
+    fn declares_utf16_as_passed_to_the_task_scheduler() {
+        // The XML travels as a BSTR (UTF-16), so the declaration must say so.
         assert!(xml().starts_with("<?xml version=\"1.0\" encoding=\"UTF-16\"?>"));
-        assert_eq!(
-            encode_utf16_with_bom("<a"),
-            vec![0xFF, 0xFE, b'<', 0, b'a', 0]
-        );
+    }
+
+    #[test]
+    fn a_task_that_was_never_registered_does_not_exist() {
+        // Read-only query through the Task Scheduler COM API; needs no elevation.
+        let name = format!("ProcmonMcpTest-never-registered-{}", std::process::id());
+        assert!(matches!(task_exists(&name), Ok(false)));
     }
 }
