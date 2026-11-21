@@ -6,8 +6,13 @@
 
 use std::ffi::OsString;
 use std::path::Path;
+use std::process::Command;
+use std::time::{Duration, Instant};
 
-use crate::job::CaptureRequest;
+use crate::job::{CaptureRequest, JobStatus};
+use crate::layout::{self, Layout};
+use crate::pmc::{capture_configuration, set_dbghelp_path};
+use crate::win;
 
 pub const CAPTURE_FILE: &str = "capture.pml";
 pub const CONFIG_FILE: &str = "filter.pmc";
@@ -57,6 +62,94 @@ pub fn read_request(path: &Path) -> Result<CaptureRequest, String> {
         .read_to_end(&mut bytes)
         .map_err(|e| format!("cannot read the request: {e}"))?;
     CaptureRequest::parse(&bytes)
+}
+
+/// Writes `status` to `path` via a temporary file, so readers never see a partial file.
+pub fn write_status(path: &Path, status: &JobStatus) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, status.to_json().to_string())?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Written to `out` when a run fails before it has a job directory, e.g. on a bad request.
+pub const RUNNER_ERROR_FILE: &str = "runner-error.json";
+
+/// How long Procmon may take beyond the requested run time to start, flush and exit.
+const PROCMON_GRACE: Duration = Duration::from_secs(60);
+
+/// One runner invocation: checks the installation, then serves the pending request.
+pub fn run(layout: &Layout) -> Result<(), String> {
+    let request = match prepare(layout) {
+        Ok(request) => request,
+        Err(message) => {
+            let _ = write_status(
+                &layout.out().join(RUNNER_ERROR_FILE),
+                &JobStatus::Failed(message.clone()),
+            );
+            return Err(message);
+        }
+    };
+    let job_dir = layout.job(request.id.as_str());
+    // create_dir, not create_dir_all: an existing directory means a replayed request.
+    std::fs::create_dir(&job_dir)
+        .map_err(|e| format!("cannot create {}: {e}", job_dir.display()))?;
+    let outcome = capture(layout, &request, &job_dir);
+    let status = match &outcome {
+        Ok(()) => JobStatus::Done,
+        Err(message) => JobStatus::Failed(message.clone()),
+    };
+    write_status(&job_dir.join(STATUS_FILE), &status)
+        .map_err(|e| format!("cannot write the status: {e}"))?;
+    outcome
+}
+
+/// Everything that must hold before Procmon may be started on the user's behalf.
+fn prepare(layout: &Layout) -> Result<CaptureRequest, String> {
+    let elevated = win::is_elevated().map_err(|e| format!("cannot query elevation: {e}"))?;
+    if !elevated {
+        return Err("the runner must be started elevated by the scheduled task".to_owned());
+    }
+    let user = win::current_user_sid().map_err(|e| format!("cannot identify the user: {e}"))?;
+    check_security(&layout.root, &layout::root_sddl())?;
+    check_security(&layout.bin(), &layout::bin_sddl())?;
+    check_security(&layout.jobs(), &layout::jobs_sddl(&user))?;
+    check_security(&layout.out(), &layout::out_sddl(&user))?;
+    win::verify_microsoft_signature(&layout.procmon())
+        .map_err(|e| format!("{}: {e}", layout.procmon().display()))?;
+    read_request(&layout.request())
+}
+
+fn capture(layout: &Layout, request: &CaptureRequest, job_dir: &Path) -> Result<(), String> {
+    let mut config = capture_configuration(&request.filter).map_err(|e| e.to_string())?;
+    let system = win::system_dir().map_err(|e| format!("cannot find System32: {e}"))?;
+    set_dbghelp_path(&mut config, &system.join("dbghelp.dll"));
+    std::fs::write(job_dir.join(CONFIG_FILE), config.to_bytes())
+        .map_err(|e| format!("cannot write the Procmon configuration: {e}"))?;
+
+    let mut procmon = Command::new(layout.procmon())
+        .args(procmon_args(job_dir, request.duration_s))
+        .spawn()
+        .map_err(|e| format!("cannot start Process Monitor: {e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(request.duration_s) + PROCMON_GRACE;
+    loop {
+        match procmon.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(250)),
+            Ok(None) => {
+                // Ask Procmon to stop cleanly so the log is closed, then force it.
+                let _ = Command::new(layout.procmon()).arg("/Terminate").status();
+                std::thread::sleep(Duration::from_secs(10));
+                let _ = procmon.kill();
+                return Err("Process Monitor did not finish in time".to_owned());
+            }
+            Err(e) => return Err(format!("cannot wait for Process Monitor: {e}")),
+        }
+    }
+    let log = job_dir.join(CAPTURE_FILE);
+    match std::fs::metadata(&log) {
+        Ok(meta) if meta.len() > 0 => Ok(()),
+        _ => Err("Process Monitor exited without writing a log".to_owned()),
+    }
 }
 
 /// Fails unless `path` has exactly the owner and DACL in `expected`.
@@ -142,6 +235,21 @@ mod tests {
         let big = dir.0.join("big.json");
         std::fs::write(&big, vec![b' '; MAX_REQUEST_BYTES as usize + 1]).unwrap();
         assert!(read_request(&big).is_err());
+    }
+
+    #[test]
+    fn status_is_written_whole_under_its_final_name() {
+        let dir = TempDir::new("status");
+        let failed = JobStatus::Failed("Procmon did not start".into());
+        write_status(&dir.0.join(STATUS_FILE), &failed).unwrap();
+        let bytes = std::fs::read(dir.0.join(STATUS_FILE)).unwrap();
+        assert_eq!(JobStatus::parse(&bytes), Ok(failed));
+        // Only the final file remains; the temporary one was renamed into place.
+        let names: Vec<_> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [STATUS_FILE]);
     }
 
     #[test]
