@@ -249,13 +249,44 @@ fn copy_self(layout: &Layout) -> Result<(), String> {
     }
     let tmp = target.with_extension("exe.new");
     std::fs::copy(&me, &tmp).map_err(|e| format!("cannot copy to {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &target).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+    replace_with(&tmp, &target)
+}
+
+/// Writes a program the setup carries, replacing `target` only once it is complete.
+fn write_program(target: &Path, bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err(format!(
+            "this setup was built without {}; build procmon-mcp first",
+            target.file_name().unwrap_or_default().display()
+        ));
+    }
+    let tmp = target.with_extension("exe.new");
+    std::fs::write(&tmp, bytes).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    replace_with(&tmp, target)
+}
+
+/// Moves a fully written `tmp` over `target`.
+fn replace_with(tmp: &Path, target: &Path) -> Result<(), String> {
+    std::fs::rename(tmp, target).map_err(|e| {
+        let _ = std::fs::remove_file(tmp);
         format!(
             "cannot replace {} (quit Claude Desktop if it is running the server): {e}",
             target.display()
         )
     })
+}
+
+/// Total size of the files directly in `dir`, for the Installed apps entry.
+fn installed_size_kib(dir: &Path) -> u32 {
+    let bytes: u64 = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|meta| meta.is_file())
+        .map(|meta| meta.len())
+        .sum();
+    u32::try_from(bytes.div_ceil(1024)).unwrap_or(u32::MAX)
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -402,6 +433,52 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let p = std::env::temp_dir()
+                .join(format!("procmon-mcp-install-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            TempDir(p)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn carried_program_replaces_the_target_and_leaves_no_temporary_file() {
+        let dir = TempDir::new("write");
+        let target = dir.0.join("procmon-mcp.exe");
+        std::fs::write(&target, b"old").unwrap();
+        write_program(&target, b"MZ new").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"MZ new");
+        assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn empty_carried_program_is_refused_without_touching_the_target() {
+        let dir = TempDir::new("empty");
+        let target = dir.0.join("procmon-mcp.exe");
+        std::fs::write(&target, b"old").unwrap();
+        let err = write_program(&target, b"").unwrap_err();
+        assert!(err.contains("built without"), "{err}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+    }
+
+    #[test]
+    fn installed_size_sums_the_files_in_kib_rounded_up() {
+        let dir = TempDir::new("size");
+        std::fs::write(dir.0.join("a"), vec![0u8; 1024]).unwrap();
+        std::fs::write(dir.0.join("b"), vec![0u8; 1]).unwrap();
+        assert_eq!(installed_size_kib(&dir.0), 2);
+    }
 
     fn value(values: &[win::RegValue], name: &str) -> win::RegValue {
         let wide: Vec<u16> = name.encode_utf16().collect();
