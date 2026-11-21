@@ -42,6 +42,15 @@ fn reference_filter_rules_round_trip_byte_for_byte() {
 }
 
 #[test]
+fn default_filter_rules_equal_the_reference_rules_in_order() {
+    let Some(bytes) = reference_pmc() else { return };
+    let config = pmc::parse(&bytes).unwrap();
+    let reference_rules = pmc::decode_filter_rules(config.data("FilterRules").unwrap()).unwrap();
+
+    assert_eq!(pmc::default_filter_rules(), reference_rules);
+}
+
+#[test]
 fn reference_file_has_the_24_records_procmon_exports() {
     let Some(bytes) = reference_pmc() else { return };
 
