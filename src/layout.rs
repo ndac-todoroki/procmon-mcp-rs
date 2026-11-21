@@ -52,6 +52,11 @@ impl Layout {
         self.bin().join("procmon-mcp.exe")
     }
 
+    /// The graphical setup, kept to uninstall from Settings → Apps.
+    pub fn setup(&self) -> PathBuf {
+        self.bin().join("procmon-mcp-setup.exe")
+    }
+
     /// Install state, such as the ETag of the downloaded Procmon.
     pub fn state(&self) -> PathBuf {
         self.bin().join("state.json")
@@ -106,6 +111,10 @@ mod tests {
         assert_eq!(
             l.server(),
             Path::new(r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe")
+        );
+        assert_eq!(
+            l.setup(),
+            Path::new(r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp-setup.exe")
         );
         assert_eq!(
             l.state(),

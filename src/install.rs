@@ -148,6 +148,24 @@ pub fn uninstall() -> Result<(), String> {
     Ok(())
 }
 
+/// The Installed apps entry, under HKLM.
+pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\ProcmonMcp";
+
+/// The values of the Installed apps entry. `size_kib` is the installed size.
+pub fn uninstall_entry(layout: &Layout, size_kib: u32) -> Vec<win::RegValue> {
+    let setup = layout.setup().display().to_string();
+    vec![
+        win::RegValue::string("DisplayName", "procmon-mcp"),
+        win::RegValue::string("DisplayVersion", env!("CARGO_PKG_VERSION")),
+        win::RegValue::string("DisplayIcon", &setup),
+        win::RegValue::string("InstallLocation", &layout.root.display().to_string()),
+        win::RegValue::string("UninstallString", &format!("\"{setup}\" --uninstall")),
+        win::RegValue::dword("EstimatedSize", size_kib),
+        win::RegValue::dword("NoModify", 1),
+        win::RegValue::dword("NoRepair", 1),
+    ]
+}
+
 /// The elevated account must be the signed-in user.
 ///
 /// The capture task runs as that account with its highest privileges, and the MCP
@@ -384,6 +402,61 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn value(values: &[win::RegValue], name: &str) -> win::RegValue {
+        let wide: Vec<u16> = name.encode_utf16().collect();
+        values
+            .iter()
+            .find(|v| v.name == wide)
+            .unwrap_or_else(|| panic!("no {name}"))
+            .clone()
+    }
+
+    #[test]
+    fn installed_apps_entry_runs_the_installed_setup_to_uninstall() {
+        let layout = Layout::under(Path::new(r"C:\ProgramData"));
+        let values = uninstall_entry(&layout, 4321);
+        let s = |name| value(&values, name);
+        let string = win::RegValue::string;
+        assert_eq!(s("DisplayName"), string("DisplayName", "procmon-mcp"));
+        assert_eq!(
+            s("UninstallString"),
+            string(
+                "UninstallString",
+                r#""C:\ProgramData\ProcmonMcp\bin\procmon-mcp-setup.exe" --uninstall"#
+            )
+        );
+        assert_eq!(
+            s("DisplayIcon"),
+            string(
+                "DisplayIcon",
+                r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp-setup.exe"
+            )
+        );
+        assert_eq!(
+            s("InstallLocation"),
+            string("InstallLocation", r"C:\ProgramData\ProcmonMcp")
+        );
+        assert_eq!(
+            s("DisplayVersion"),
+            string("DisplayVersion", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            s("EstimatedSize"),
+            win::RegValue::dword("EstimatedSize", 4321)
+        );
+        // Settings offers only Uninstall: running the setup again is the repair.
+        assert_eq!(s("NoModify"), win::RegValue::dword("NoModify", 1));
+        assert_eq!(s("NoRepair"), win::RegValue::dword("NoRepair", 1));
+    }
+
+    #[test]
+    fn installed_apps_entry_lives_under_the_machine_uninstall_key() {
+        assert_eq!(
+            UNINSTALL_KEY,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall\ProcmonMcp"
+        );
+    }
 
     #[test]
     fn accepts_an_elevation_by_the_signed_in_user() {

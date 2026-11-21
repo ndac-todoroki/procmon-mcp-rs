@@ -9,9 +9,9 @@ use std::io;
 
 use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE,
-    REG_OPTION_NON_VOLATILE, REG_VALUE_TYPE, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW,
-    RegEnumValueW, RegOpenKeyExW, RegQueryInfoKeyW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD,
+    REG_OPTION_NON_VOLATILE, REG_SZ, REG_VALUE_TYPE, RegCreateKeyExW, RegDeleteTreeW,
+    RegDeleteValueW, RegEnumValueW, RegOpenKeyExW, RegQueryInfoKeyW, RegSetValueExW,
 };
 use windows::core::{HSTRING, Owned, PCWSTR, PWSTR};
 
@@ -21,6 +21,30 @@ pub struct RegValue {
     pub name: Vec<u16>,
     pub kind: u32,
     pub data: Vec<u8>,
+}
+
+impl RegValue {
+    /// A `REG_SZ` value.
+    pub fn string(name: &str, value: &str) -> RegValue {
+        RegValue {
+            name: name.encode_utf16().collect(),
+            kind: REG_SZ.0,
+            data: value
+                .encode_utf16()
+                .chain(Some(0))
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        }
+    }
+
+    /// A `REG_DWORD` value.
+    pub fn dword(name: &str, value: u32) -> RegValue {
+        RegValue {
+            name: name.encode_utf16().collect(),
+            kind: REG_DWORD.0,
+            data: value.to_le_bytes().to_vec(),
+        }
+    }
 }
 
 /// The values of a key at one point in time. Subkeys are not included.
@@ -263,6 +287,21 @@ mod tests {
             .chain(Some(0))
             .flat_map(u16::to_le_bytes)
             .collect()
+    }
+
+    #[test]
+    fn string_values_are_nul_terminated_utf16() {
+        let v = RegValue::string("DisplayName", "procmon-mcp");
+        assert_eq!(v.name, "DisplayName".encode_utf16().collect::<Vec<_>>());
+        assert_eq!(v.kind, REG_SZ.0);
+        assert_eq!(v.data, sz("procmon-mcp"));
+    }
+
+    #[test]
+    fn dword_values_are_four_little_endian_bytes() {
+        let v = RegValue::dword("NoModify", 1);
+        assert_eq!(v.kind, REG_DWORD.0);
+        assert_eq!(v.data, [1, 0, 0, 0]);
     }
 
     #[test]
