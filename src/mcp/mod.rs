@@ -108,7 +108,7 @@ impl Server {
         Ok(Era::Modern)
     }
 
-    fn dispatch(&mut self, method: &str, _params: &Value) -> Result<Value, RpcError> {
+    fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, RpcError> {
         match method {
             "server/discover" => Ok(json!({
                 "supportedVersions": supported_versions(),
@@ -116,6 +116,26 @@ impl Server {
             })),
             // Removed in 2026-07-28 but still sent by legacy clients.
             "ping" => Ok(json!({})),
+            // The tool set never changes while the server runs.
+            "tools/list" => Ok(json!({
+                "tools": tools::definitions(),
+                "ttlMs": 24 * 60 * 60 * 1000,
+                "cacheScope": "public",
+            })),
+            "tools/call" => {
+                let name = params["name"].as_str().unwrap_or("");
+                let arguments = match &params["arguments"] {
+                    Value::Null => json!({}),
+                    a => a.clone(),
+                };
+                let output = tools::call(name, &arguments).ok_or_else(|| {
+                    RpcError::new(INVALID_PARAMS, format!("Unknown tool: {name}"))
+                })?;
+                Ok(json!({
+                    "content": [{"type": "text", "text": output.text}],
+                    "isError": output.is_error,
+                }))
+            }
             _ => Err(RpcError::new(
                 METHOD_NOT_FOUND,
                 format!("method not found: {method}"),
@@ -275,5 +295,51 @@ mod tests {
             .handle(&request(5, "ping", json!({})))
             .unwrap();
         assert_eq!(response["result"], json!({}));
+    }
+
+    #[test]
+    fn tools_list_returns_cacheable_tool_definitions() {
+        let response = legacy_server()
+            .handle(&request(6, "tools/list", json!({})))
+            .unwrap();
+        let result = &response["result"];
+        assert!(
+            result["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["name"] == "summarize_log")
+        );
+        // Required on tools/list results from 2026-07-28; ignored by older clients.
+        assert!(result["ttlMs"].is_u64());
+        assert_eq!(result["cacheScope"], "public");
+    }
+
+    fn call(name: &str, arguments: Value) -> Value {
+        legacy_server()
+            .handle(&request(
+                7,
+                "tools/call",
+                json!({"name": name, "arguments": arguments}),
+            ))
+            .unwrap()
+    }
+
+    #[test]
+    fn tools_call_with_unknown_name_is_invalid_params() {
+        assert_eq!(call("format_disk", json!({}))["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn tools_call_returns_tool_failures_as_error_results() {
+        let result = &call("summarize_log", json!({"pml_path": "notes.txt"}))["result"];
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["content"][0]["type"], "text");
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains(".pml")
+        );
     }
 }
