@@ -10,9 +10,10 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::ptr::null_mut;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
+use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::{
-    GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+    GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
 };
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
@@ -21,32 +22,78 @@ use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramData, SHGetKnownFolderPath};
 
 /// Whether this process runs with an elevated (administrator) token.
 pub fn is_elevated() -> io::Result<bool> {
-    let mut token: HANDLE = null_mut();
-    // SAFETY: the pseudo handle from GetCurrentProcess needs no closing; `token` is
-    // closed below once opened.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let token = ProcessToken::open()?;
     let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
     let mut returned = 0u32;
     // SAFETY: the buffer is a TOKEN_ELEVATION of the size passed.
     let ok = unsafe {
         GetTokenInformation(
-            token,
+            token.0,
             TokenElevation,
             (&raw mut elevation).cast(),
             size_of::<TOKEN_ELEVATION>() as u32,
             &mut returned,
         )
     };
-    let result = if ok == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(elevation.TokenIsElevated != 0)
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(elevation.TokenIsElevated != 0)
+}
+
+/// The SID of the user this process runs as, e.g. `S-1-5-21-…-1001`.
+pub fn current_user_sid() -> io::Result<String> {
+    let token = ProcessToken::open()?;
+    // TOKEN_USER is followed by the variable-length SID it points to; 256 bytes is
+    // far beyond the largest SID (68 bytes).
+    let mut buf = [0u64; 32];
+    let mut returned = 0u32;
+    // SAFETY: the buffer is 8-byte aligned, as TOKEN_USER requires, and its size is passed.
+    let ok = unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            buf.as_mut_ptr().cast(),
+            size_of_val(&buf) as u32,
+            &mut returned,
+        )
     };
-    // SAFETY: `token` was opened above and is closed exactly once.
-    unsafe { CloseHandle(token) };
-    result
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let user = buf.as_ptr().cast::<TOKEN_USER>();
+    let mut text = null_mut();
+    // SAFETY: the SID pointer refers into `buf`, alive for the call; `text` is
+    // LocalFree'd below.
+    if unsafe { ConvertSidToStringSidW((*user).User.Sid, &mut text) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a successful conversion returns a NUL-terminated wide string.
+    let sid = unsafe { wide_c_str_to_path(text) };
+    // SAFETY: allocated by ConvertSidToStringSidW.
+    unsafe { LocalFree(text.cast()) };
+    Ok(sid.to_string_lossy().into_owned())
+}
+
+/// This process's access token, opened for querying and closed on drop.
+struct ProcessToken(HANDLE);
+
+impl ProcessToken {
+    fn open() -> io::Result<Self> {
+        let mut token: HANDLE = null_mut();
+        // SAFETY: the pseudo handle from GetCurrentProcess needs no closing.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(ProcessToken(token))
+    }
+}
+
+impl Drop for ProcessToken {
+    fn drop(&mut self) {
+        // SAFETY: opened by OpenProcessToken and closed exactly once.
+        unsafe { CloseHandle(self.0) };
+    }
 }
 
 /// `C:\ProgramData` as configured on this system.
@@ -110,6 +157,17 @@ mod tests {
         let expected = format!(r"{}\System32", std::env::var("SystemRoot").unwrap());
         let actual = system_dir().unwrap();
         assert!(same_dir(&actual, &expected), "{actual:?} vs {expected}");
+    }
+
+    #[test]
+    fn current_user_sid_is_a_user_sid_string() {
+        let sid = current_user_sid().unwrap();
+        // Local and domain accounts: S-1-5-21-<domain>-<rid>; Microsoft accounts too.
+        assert!(sid.starts_with("S-1-5-21-"), "{sid}");
+        assert!(
+            sid.split('-').skip(1).all(|p| p.parse::<u64>().is_ok()),
+            "{sid}"
+        );
     }
 
     #[test]
