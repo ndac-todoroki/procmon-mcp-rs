@@ -36,7 +36,10 @@ pub fn install(options: &InstallOptions) -> Result<(), String> {
 
     step(
         style,
-        &format!("Creating {}", layout.root.display()),
+        &format!(
+            "Creating {}",
+            style.paint(&layout.root.display().to_string(), Color::Code)
+        ),
         || {
             prepare_root(&layout)?;
             for (dir, sddl) in [
@@ -51,9 +54,11 @@ pub fn install(options: &InstallOptions) -> Result<(), String> {
             Ok("Done!")
         },
     )?;
-    step(style, "Copying procmon-mcp.exe", || {
-        copy_self(&layout).map(|()| "Done!")
-    })?;
+    step(
+        style,
+        &format!("Copying {}", style.paint("procmon-mcp.exe", Color::Code)),
+        || copy_self(&layout).map(|()| "Done!"),
+    )?;
     step(style, "Downloading Process Monitor", || {
         update_procmon(&layout).map(|outcome| match outcome {
             UpdateOutcome::Updated => "Done! (Microsoft signature verified)",
@@ -62,14 +67,18 @@ pub fn install(options: &InstallOptions) -> Result<(), String> {
     })?;
     step(
         style,
-        &format!("Registering the scheduled task {}", task::TASK_NAME),
+        &format!(
+            "Registering the scheduled task {}",
+            style.paint(task::TASK_NAME, Color::Code)
+        ),
         || register_task(&layout, &user).map(|()| "Done!"),
     )?;
 
     eprintln!(
-        "\n{} is installed. Add this to \"mcpServers\" in Claude Desktop's \
-         claude_desktop_config.json:\n\n{}\n",
+        "\n{} is installed. Add this to {} in Claude Desktop's {}:\n\n{}\n",
         style.paint("procmon-mcp", Color::Accent),
+        style.paint("mcpServers", Color::Code),
+        style.paint("claude_desktop_config.json", Color::Code),
         style.highlight_json(&claude_desktop_entry(&layout.server()))
     );
     Ok(())
@@ -283,29 +292,37 @@ pub fn procmon_download_path(arch: &str) -> &'static str {
 /// with its source and destination, so a user can decide before anything is fetched.
 pub fn install_notice(layout: &Layout, arch: &str, style: Style) -> String {
     let name = style.paint("procmon-mcp", Color::Accent);
+    // Whatever one would put in backticks: paths, URLs, switches, names.
+    let code = |text: &str| style.paint(text, Color::Code);
     let url = format!("https://{SYSINTERNALS_LIVE}{}", procmon_download_path(arch));
     format!(
         "Welcome to {name} installation!\n\
          \n\
          This will:\n\
-         \x20 - create {root} (bin, jobs, out),\n\
-         \x20   writable only by administrators (you may add requests to jobs\n\
-         \x20   and read or delete results in out)\n\
+         \x20 - create {root} ({bin}, {jobs}, {out}),\n\
+         \x20   writable only by administrators (you may add requests to {jobs}\n\
+         \x20   and read or delete results in {out})\n\
          \x20 - copy this program to {server}\n\
          \x20 - download Process Monitor from Microsoft Sysinternals\n\
          \x20     from {url}\n\
          \x20     to   {procmon}\n\
          \x20   and use it only if it carries a valid Microsoft signature\n\
-         \x20 - register the scheduled task \"{task}\", which runs a capture with\n\
+         \x20 - register the scheduled task {task}, which runs a capture with\n\
          \x20   administrator rights when Claude asks for one\n\
          \n\
-         This MCP server starts Process Monitor with /AcceptEula, which accepts the\n\
+         This MCP server starts Process Monitor with {accept}, which accepts the\n\
          Sysinternals Software License Terms on your behalf:\n\
-         \x20 {EULA_URL}\n",
-        root = layout.root.display(),
-        server = layout.server().display(),
-        procmon = layout.procmon().display(),
-        task = crate::task::TASK_NAME,
+         \x20 {eula}\n",
+        root = code(&layout.root.display().to_string()),
+        bin = code("bin"),
+        jobs = code("jobs"),
+        out = code("out"),
+        server = code(&layout.server().display().to_string()),
+        url = code(&url),
+        procmon = code(&layout.procmon().display().to_string()),
+        task = code(crate::task::TASK_NAME),
+        accept = code("/AcceptEula"),
+        eula = code(EULA_URL),
     )
 }
 
@@ -412,6 +429,29 @@ mod tests {
             "Welcome to {} installation!",
             on.paint("procmon-mcp", Color::Accent)
         )));
+    }
+
+    #[test]
+    fn notice_colors_paths_urls_and_switches_as_code() {
+        let layout = Layout::under(Path::new(r"C:\ProgramData"));
+        let on = Style { enabled: true };
+        let notice = install_notice(&layout, "x86_64", on);
+        for code in [
+            r"C:\ProgramData\ProcmonMcp",
+            r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe",
+            "https://live.sysinternals.com/Procmon64.exe",
+            r"C:\ProgramData\ProcmonMcp\bin\Procmon64.exe",
+            crate::task::TASK_NAME,
+            "/AcceptEula",
+            EULA_URL,
+            "jobs",
+            "out",
+        ] {
+            assert!(
+                notice.contains(&on.paint(code, Color::Code)),
+                "{code:?} not colored in:\n{notice}"
+            );
+        }
     }
 
     #[test]

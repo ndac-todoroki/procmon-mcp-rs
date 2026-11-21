@@ -10,6 +10,8 @@ pub enum Color {
     Accent,
     Success,
     Warning,
+    /// Paths, URLs, switches and names a reader might type or copy.
+    Code,
     /// JSON object keys.
     Key,
     /// JSON string values.
@@ -46,6 +48,7 @@ impl Style {
             Color::Accent => "1;36", // bold cyan
             Color::Success => "32",  // green
             Color::Warning => "33",  // yellow
+            Color::Code => "35",     // magenta
             Color::Key => "36",      // cyan
             Color::Value => "32",    // green
         };
