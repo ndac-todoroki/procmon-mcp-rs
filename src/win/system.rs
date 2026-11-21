@@ -14,15 +14,16 @@ use windows::Win32::Security::{
     GetTokenInformation, LookupAccountNameW, PSID, SID_NAME_USE, TOKEN_ELEVATION, TOKEN_QUERY,
     TOKEN_USER, TokenElevation, TokenUser,
 };
+use windows::Win32::Storage::FileSystem::{MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::RemoteDesktop::{
     WTS_CURRENT_SESSION, WTS_INFO_CLASS, WTSDomainName, WTSFreeMemory, WTSQuerySessionInformationW,
     WTSUserName,
 };
-use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+use windows::Win32::System::SystemInformation::{GetSystemDirectoryW, GetSystemWindowsDirectoryW};
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::Shell::{FOLDERID_ProgramData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
-use windows::core::{HSTRING, Owned, PWSTR};
+use windows::core::{HSTRING, Owned, PCWSTR, PWSTR};
 
 /// Whether this process runs with an elevated (administrator) token.
 pub fn is_elevated() -> io::Result<bool> {
@@ -154,6 +155,31 @@ pub fn system_dir() -> io::Result<PathBuf> {
     Ok(PathBuf::from(String::from_utf16_lossy(&buf[..len])))
 }
 
+/// `C:\Windows` as configured on this system.
+pub fn windows_dir() -> io::Result<PathBuf> {
+    let mut buf = [0u16; 260];
+    // SAFETY: the slice carries its own length.
+    let len = unsafe { GetSystemWindowsDirectoryW(Some(&mut buf)) } as usize;
+    if len == 0 || len >= buf.len() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(PathBuf::from(String::from_utf16_lossy(&buf[..len])))
+}
+
+/// Has Windows delete `path` (a file or an empty directory) at the next restart.
+/// Needs administrator rights.
+pub fn delete_at_reboot(path: &std::path::Path) -> io::Result<()> {
+    // SAFETY: plain call with a NUL-terminated path.
+    unsafe {
+        MoveFileExW(
+            &HSTRING::from(path),
+            PCWSTR::null(),
+            MOVEFILE_DELAY_UNTIL_REBOOT,
+        )
+    }?;
+    Ok(())
+}
+
 /// This process's access token, opened for querying and closed on drop.
 fn process_token() -> io::Result<Owned<HANDLE>> {
     let mut token = HANDLE::default();
@@ -185,6 +211,13 @@ mod tests {
     fn system_dir_is_system32_under_the_windows_directory() {
         let expected = format!(r"{}\System32", std::env::var("SystemRoot").unwrap());
         let actual = system_dir().unwrap();
+        assert!(same_dir(&actual, &expected), "{actual:?} vs {expected}");
+    }
+
+    #[test]
+    fn windows_dir_matches_the_default_environment() {
+        let expected = std::env::var("SystemRoot").unwrap();
+        let actual = windows_dir().unwrap();
         assert!(same_dir(&actual, &expected), "{actual:?} vs {expected}");
     }
 

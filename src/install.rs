@@ -203,29 +203,72 @@ pub fn update() -> Result<UpdateOutcome, String> {
 
 /// Removes the task and everything under ProgramData\ProcmonMcp.
 pub fn uninstall() -> Result<(), String> {
-    require_elevated()?;
-    let layout = Layout::system().map_err(|e| format!("cannot locate ProgramData: {e}"))?;
-    if task::exists().map_err(|e| format!("cannot query the scheduled task: {e}"))? {
-        task::delete().map_err(|e| format!("cannot remove the scheduled task: {e}"))?;
+    let report = remove_installation()?;
+    if report.task_removed {
         eprintln!("Removed the scheduled task {}", task::TASK_NAME);
     }
+    if report.root_removed {
+        eprintln!("Removed {}", report.root.display());
+    }
+    if report.in_use > 0 {
+        eprintln!(
+            "{} file(s) still in use were moved aside and will be deleted when Windows restarts.",
+            report.in_use
+        );
+    }
+    eprintln!("Remove the \"procmon\" entry from Claude Desktop's configuration as well.");
+    Ok(())
+}
+
+/// What [`remove_installation`] removed.
+#[derive(Debug)]
+pub struct UninstallReport {
+    pub root: std::path::PathBuf,
+    pub task_removed: bool,
+    pub root_removed: bool,
+    /// Files in use (running programs) moved aside and deleted at the next restart.
+    pub in_use: usize,
+}
+
+/// Removes the task, the Installed apps entry and everything under ProgramData\ProcmonMcp.
+pub fn remove_installation() -> Result<UninstallReport, String> {
+    require_elevated()?;
+    let layout = Layout::system().map_err(|e| format!("cannot locate ProgramData: {e}"))?;
+    let mut report = UninstallReport {
+        root: layout.root.clone(),
+        task_removed: false,
+        root_removed: false,
+        in_use: 0,
+    };
+    if task::exists().map_err(|e| format!("cannot query the scheduled task: {e}"))? {
+        task::delete().map_err(|e| format!("cannot remove the scheduled task: {e}"))?;
+        report.task_removed = true;
+    }
+    win::restore_key(
+        win::Hive::LocalMachine,
+        UNINSTALL_KEY,
+        &win::KeySnapshot { values: None },
+    )
+    .map_err(|e| format!("cannot remove procmon-mcp from Installed apps: {e}"))?;
     match std::fs::symlink_metadata(&layout.root) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("cannot inspect {}: {e}", layout.root.display())),
         Ok(_) => {
             check_ours(&layout.root)?;
-            // remove_dir_all does not follow junctions or symbolic links.
-            std::fs::remove_dir_all(&layout.root).map_err(|e| {
-                format!(
-                    "cannot remove {} (is Claude Desktop still running the server?): {e}",
-                    layout.root.display()
-                )
-            })?;
-            eprintln!("Removed {}", layout.root.display());
+            // On the same volume as ProgramData, so running images can be moved there.
+            let graveyard = win::windows_dir()
+                .map_err(|e| format!("cannot locate the Windows folder: {e}"))?
+                .join("Temp");
+            let retired = remove_tree(&layout.root, &graveyard)?;
+            for path in &retired {
+                win::delete_at_reboot(path)
+                    .map_err(|e| format!("cannot schedule {} for deletion: {e}", path.display()))?;
+            }
+            report.root_removed = true;
+            report.in_use = retired.len();
         }
     }
-    eprintln!("Remove the \"procmon\" entry from Claude Desktop's configuration as well.");
-    Ok(())
+    Ok(report)
 }
 
 /// The Installed apps entry, under HKLM.
