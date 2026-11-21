@@ -28,6 +28,8 @@ pub enum PmcError {
     Truncated { offset: usize },
     /// The size fields of the record at `offset` are inconsistent.
     InvalidSize { offset: usize },
+    /// The string at `offset` is not NUL-terminated UTF-16LE without interior NULs.
+    InvalidString { offset: usize },
 }
 
 impl fmt::Display for PmcError {
@@ -41,6 +43,9 @@ impl fmt::Display for PmcError {
                     f,
                     "inconsistent size fields in the PMC record at offset {offset}"
                 )
+            }
+            PmcError::InvalidString { offset } => {
+                write!(f, "invalid UTF-16 string in PMC data at offset {offset}")
             }
         }
     }
@@ -56,12 +61,7 @@ impl Configuration {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for record in &self.records {
-            let mut name: Vec<u8> = record
-                .name
-                .encode_utf16()
-                .chain([0])
-                .flat_map(u16::to_le_bytes)
-                .collect();
+            let mut name = encode_utf16z(&record.name);
             let header_and_name_size = size_u32(HEADER_SIZE + name.len());
             let data_size = size_u32(record.data.len());
             let record_size = header_and_name_size
@@ -116,20 +116,41 @@ fn parse_record(rest: &[u8], offset: usize) -> Result<(Record, usize), PmcError>
     let name_bytes = rest
         .get(HEADER_SIZE..header_and_name_size)
         .ok_or(truncated.clone())?;
-    let data_end = header_and_name_size
-        .checked_add(data_size)
-        .ok_or(truncated.clone())?;
     let data = rest
-        .get(header_and_name_size..data_end)
+        .get(header_and_name_size..record_size)
         .ok_or(truncated)?
         .to_vec();
+    let name = decode_utf16z(name_bytes).ok_or(PmcError::InvalidString {
+        offset: offset + HEADER_SIZE,
+    })?;
+    Ok((Record { name, data }, record_size))
+}
 
-    let name_units: Vec<u16> = name_bytes
+/// Decodes NUL-terminated UTF-16LE that has no interior NUL.
+///
+/// Interior NULs are rejected rather than truncated at, because the text after them
+/// would be lost and the bytes would no longer round-trip.
+pub(crate) fn decode_utf16z(bytes: &[u8]) -> Option<String> {
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let units: Vec<u16> = bytes
         .chunks_exact(2)
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
-    let name = String::from_utf16(&name_units[..name_units.len() - 1]).unwrap();
-    Ok((Record { name, data }, record_size))
+    let (&last, text) = units.split_last()?;
+    if last != 0 || text.contains(&0) {
+        return None;
+    }
+    String::from_utf16(text).ok()
+}
+
+/// Encodes `text` as UTF-16LE followed by a NUL.
+pub(crate) fn encode_utf16z(text: &str) -> Vec<u8> {
+    text.encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect()
 }
 
 const HEADER_SIZE: usize = 0x10;
@@ -250,6 +271,37 @@ mod tests {
         set_u32(&mut bytes, 8, 0x0e);
 
         assert_eq!(parse(&bytes), Err(PmcError::InvalidSize { offset: 0 }));
+    }
+
+    /// A record whose name bytes are given verbatim (the NUL is not added).
+    fn record_with_raw_name(name_bytes: &[u8]) -> Vec<u8> {
+        let header_and_name = 0x10 + name_bytes.len() as u32;
+        let mut out = Vec::new();
+        for field in [header_and_name, 0x10, header_and_name, 0] {
+            out.extend_from_slice(&field.to_le_bytes());
+        }
+        out.extend_from_slice(name_bytes);
+        out
+    }
+
+    #[test]
+    fn names_that_are_not_nul_terminated_utf16_are_invalid() {
+        let cases: [(&str, &[u8]); 5] = [
+            ("empty, so no NUL", &[]),
+            ("odd byte length", &[b'A', 0, 0]),
+            ("missing NUL", &[b'A', 0]),
+            ("NUL before the end", &[b'A', 0, 0, 0, b'B', 0, 0, 0]),
+            ("unpaired surrogate", &[0x00, 0xd8, 0, 0]),
+        ];
+        for (case, name_bytes) in cases {
+            assert_eq!(
+                parse(&record_with_raw_name(name_bytes)),
+                Err(PmcError::InvalidString {
+                    offset: HEADER_SIZE
+                }),
+                "{case}"
+            );
+        }
     }
 
     #[test]
