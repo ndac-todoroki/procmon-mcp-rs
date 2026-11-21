@@ -123,3 +123,34 @@ fn huion_log_create_file_on_dot_cfg_fails_with_name_not_found() {
     assert_eq!(dot_cfg.len(), 42);
     assert!(dot_cfg.iter().all(|e| e.result == 0xC000_0034));
 }
+
+#[test]
+fn default_filter_log_reads_every_event_with_plausible_paths() {
+    let Some(path) = reference_file("Logfile_default_filter.PML") else {
+        return;
+    };
+    let mut reader = PmlReader::open(&path).unwrap();
+    let expected = reader.header().number_of_events as usize;
+    let mut total = 0;
+    let mut registry_without_root = Vec::new();
+    for event in reader.events() {
+        let event = event.unwrap();
+        total += 1;
+        if event.class == procmon_mcp::pml::EventClass::Registry {
+            match event.path.as_deref() {
+                // Silo (container) hives are shown with their native \REGISTRY\ prefix.
+                Some(p) if p.starts_with("HK") || p.starts_with(r"\REGISTRY\") => {}
+                other => {
+                    registry_without_root.push((event.operation_name(), other.map(str::to_owned)))
+                }
+            }
+        }
+    }
+    assert_eq!(total, expected);
+    assert!(
+        registry_without_root.is_empty(),
+        "{} registry events without a known root, e.g. {:?}",
+        registry_without_root.len(),
+        &registry_without_root[..registry_without_root.len().min(5)]
+    );
+}
