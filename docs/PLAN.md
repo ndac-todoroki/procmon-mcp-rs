@@ -21,7 +21,9 @@ Claude Desktop から「プロセス X を N 秒 Procmon で取得して、何�
 | Procmon の検証 | `WinVerifyTrust` で署名が有効、かつ署名者が Microsoft Corporation であること。`install` / `update` 時と、毎回の起動前に確認 | 公式のハッシュ値は公開されていない。署名は Microsoft がハッシュに署名したものなので、ハッシュ照合より強い |
 | Procmon の更新 | `update` コマンドで明示的に行う。前回の `ETag` を使った条件付き GET で、変更がなければ本体を取得しない（`304 Not Modified`） | バージョン番号を事前に知るにはスクレイピングが必要になるため避ける。取得のたびに通信しない。昇格側でダウンロードしない |
 | フィルター | 最初から PMC を生成する。GUI 既定の除外ルールをテンプレートにし、`DestructiveFilter=1` を設定する | 取得時に絞り込み、ログを小さくするため。`DestructiveFilter=0` だと除外したイベントも PML に書き込まれる |
-| MCP 層 | `serde` + `serde_json` で JSON-RPC over stdio を自作する | 同時に処理するのは2〜3件だけで、`std::thread` で足りる。rmcp + tokio は73クレート、serde_json だけなら10クレート |
+| MCP 層 | `serde_json` で JSON-RPC over stdio を自作する（`Value` で扱い、`serde` の derive は使わない） | 同時に処理するのは2〜3件だけで、`std::thread` で足りる。rmcp + tokio は73クレート。serde_json だけなら5クレートで、proc-macro もない |
+| MCP のバージョン | 2026-07-28（リクエストごとに `_meta` でバージョンを送る方式）と、2025-11-25 以前（`initialize` で始める方式）の両方に応じる | 仕様の後方互換の節で認められている方式。Claude Desktop がどちらで話すかに依存しないため |
+| 集計結果の言語 | 英語のみ（切り替えなし） | 読むのは Claude で、ユーザーの言語で説明し直すため |
 | PML パーサー | procmon-parser のドキュメントに基づいて、必要な部分だけを実装する。実ファイルとの突き合わせは最低限にする | 公式の仕様はない。procmon-parser が事実上の参照実装 |
 | インストーラー | `install` / `uninstall` は最初から CLI で作り、GUI は最後のフェーズで作る | GUI は外側だけ。作ったものをすべて記録し、アンインストールできる設計を先に固める |
 | ライセンス | MIT | procmon-parser（MIT, Copyright (c) 2020 Ely Ronnen）に合わせる |
@@ -113,7 +115,10 @@ Claude Desktop ──stdio──> procmon-mcp.exe（通常権限、MCP サーバ
 
 ## 未確認・要検証
 
-- 実際の PMC の既定ルールは24本で、procmon-parser の README の例（23本）より1本多い。フェーズ3で差分を確認する。
+- （解決済み）実際の PMC の既定ルールは24本で、procmon-parser の README の例より1本多い。24本目は「Event Class is IPC → Exclude」。
+- PMC の `DbgHelpPath` が `C:\WINDOWS\...` 固定。`runner` で `%SystemRoot%` から組み立てる。
+- PMC のフォント設定が日本語環境の値（Yu Gothic UI）。HKCU への書き戻しの確認と合わせて扱いを決める。
+- ネットワークイベントの Path（ホストとポートのテーブルが必要）は未実装。
 - 生成した PMC だけで（GUI で書き出した他のレコードがなくても）`/LoadConfig` が期待どおり効くか。
 - `/LoadConfig` で読み込んだ設定を、Procmon が終了時に HKCU へ保存し、ユーザーの GUI のフィルターを上書きしないか。
 - `schtasks /run` で、昇格タスクが UAC なしで起動するか。
