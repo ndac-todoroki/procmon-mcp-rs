@@ -1,5 +1,7 @@
 //! Building the configuration that a capture run loads with `/LoadConfig`.
 
+use std::fmt;
+
 use super::defaults::default_filter_rules;
 use super::filter::{Action, Column, FilterRule, Relation, encode_filter_rules};
 use super::record::{Configuration, Record};
@@ -29,6 +31,29 @@ pub enum CaptureFilterError {
 
 /// Most operations one capture may include.
 pub const MAX_OPERATIONS: usize = 32;
+
+impl fmt::Display for CaptureFilterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CaptureFilterError::TooLong { field } => write!(
+                f,
+                "{field} is longer than {MAX_TEXT_UNITS} UTF-16 code units"
+            ),
+            CaptureFilterError::ControlCharacter { field } => {
+                write!(f, "{field} contains a control character")
+            }
+            CaptureFilterError::Empty { field } => write!(f, "{field} is empty"),
+            CaptureFilterError::TooManyOperations { count } => {
+                write!(
+                    f,
+                    "{count} operations given, at most {MAX_OPERATIONS} allowed"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CaptureFilterError {}
 
 /// Longest accepted condition text, in UTF-16 units (Windows' `MAX_PATH`).
 pub const MAX_TEXT_UNITS: usize = 260;
@@ -344,6 +369,13 @@ mod tests {
             capture_configuration(&operations(33)).err(),
             Some(CaptureFilterError::TooManyOperations { count: 33 })
         );
+    }
+
+    #[test]
+    fn error_message_names_the_offending_field() {
+        let error = capture_configuration(&filter_with("path_contains", "")).unwrap_err();
+
+        assert_eq!(error.to_string(), "path_contains is empty");
     }
 
     #[test]
