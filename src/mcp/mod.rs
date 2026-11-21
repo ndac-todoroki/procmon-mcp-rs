@@ -4,11 +4,17 @@
 //! - modern (2026-07-28): every request carries its version in `_meta`; no handshake.
 //! - legacy (2025-11-25 and earlier): an `initialize` request opens a session.
 
+mod progress;
 mod tools;
 
 use std::io::{BufRead, Write};
 
 use serde_json::{Value, json};
+
+use progress::ProgressReporter;
+
+/// Seconds of capture between progress notifications.
+const PROGRESS_INTERVAL_S: f64 = 5.0;
 
 /// Revisions served with per-request `_meta`.
 pub const MODERN_VERSIONS: &[&str] = &["2026-07-28"];
@@ -55,8 +61,18 @@ pub fn serve(input: impl BufRead, mut output: impl Write) -> std::io::Result<()>
         if line.trim().is_empty() {
             continue;
         }
+        let mut notify_error = None;
         let response = match serde_json::from_str::<Value>(&line) {
-            Ok(message @ Value::Object(_)) => server.handle(&message),
+            Ok(message @ Value::Object(_)) => {
+                let mut notify = |notification: Value| {
+                    if notify_error.is_none()
+                        && let Err(e) = write_message(&mut output, &notification)
+                    {
+                        notify_error = Some(e);
+                    }
+                };
+                server.handle_with(&message, &mut notify)
+            }
             // Batches were removed from MCP; a bare value is not a message either.
             Ok(_) => Some(error_response(
                 Value::Null,
@@ -67,14 +83,22 @@ pub fn serve(input: impl BufRead, mut output: impl Write) -> std::io::Result<()>
                 RpcError::new(PARSE_ERROR, format!("parse error: {e}")),
             )),
         };
+        if let Some(e) = notify_error {
+            return Err(e);
+        }
         if let Some(response) = response {
-            // serde_json's compact form never contains a raw newline, as stdio framing requires.
-            serde_json::to_writer(&mut output, &response)?;
-            output.write_all(b"\n")?;
-            output.flush()?;
+            write_message(&mut output, &response)?;
         }
     }
     Ok(())
+}
+
+/// Writes one message as a line. serde_json's compact form never contains a raw newline,
+/// as stdio framing requires.
+fn write_message(output: &mut impl Write, message: &Value) -> std::io::Result<()> {
+    serde_json::to_writer(&mut *output, message)?;
+    output.write_all(b"\n")?;
+    output.flush()
 }
 
 fn error_response(id: Value, error: RpcError) -> Value {
@@ -98,6 +122,12 @@ pub struct Server {
 impl Server {
     /// Handles one incoming message and returns the response to send, if any.
     pub fn handle(&mut self, message: &Value) -> Option<Value> {
+        self.handle_with(message, &mut |_| {})
+    }
+
+    /// Like `handle`, but sends notifications raised while handling (such as progress)
+    /// through `notify` before the response is returned.
+    pub fn handle_with(&mut self, message: &Value, notify: &mut dyn FnMut(Value)) -> Option<Value> {
         let id = message.get("id")?.clone();
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let params = message.get("params").cloned().unwrap_or(Value::Null);
@@ -105,7 +135,7 @@ impl Server {
             Ok(self.initialize(&params))
         } else {
             self.era_of(&params).and_then(|era| {
-                let mut result = self.dispatch(method, &params)?;
+                let mut result = self.dispatch(method, &params, notify)?;
                 if era == Era::Modern {
                     result["resultType"] = json!("complete");
                     result["_meta"] = json!({"io.modelcontextprotocol/serverInfo": server_info()});
@@ -146,7 +176,12 @@ impl Server {
         Ok(Era::Modern)
     }
 
-    fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, RpcError> {
+    fn dispatch(
+        &mut self,
+        method: &str,
+        params: &Value,
+        notify: &mut dyn FnMut(Value),
+    ) -> Result<Value, RpcError> {
         match method {
             "server/discover" => Ok(json!({
                 "supportedVersions": supported_versions(),
@@ -166,7 +201,10 @@ impl Server {
                     Value::Null => json!({}),
                     a => a.clone(),
                 };
-                let output = tools::call(name, &arguments, &mut |_, _| {}).ok_or_else(|| {
+                let token = Some(params["_meta"]["progressToken"].clone()).filter(|t| !t.is_null());
+                let mut reporter = ProgressReporter::new(token, notify, PROGRESS_INTERVAL_S);
+                let mut progress = |elapsed, total| reporter.report(elapsed, total);
+                let output = tools::call(name, &arguments, &mut progress).ok_or_else(|| {
                     RpcError::new(INVALID_PARAMS, format!("Unknown tool: {name}"))
                 })?;
                 let mut result = json!({
