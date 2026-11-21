@@ -160,6 +160,9 @@ fn capture(args: &Value, progress: &mut ProgressFn<'_>) -> Result<ToolOutput, St
                 .to_owned(),
         );
     }
+    let running = crate::win::running_image_names()
+        .map_err(|e| format!("cannot list running processes: {e}"))?;
+    crate::capture::ensure_procmon_not_running(&running)?;
     let _lock = CaptureLock::acquire(&layout)?;
     let timeout = Duration::from_secs(request.duration_s) + OVERHEAD;
     let job = run_capture(&layout, &request, task::run, timeout, progress)?;

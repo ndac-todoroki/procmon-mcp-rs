@@ -114,6 +114,10 @@ fn prepare(layout: &Layout) -> Result<CaptureRequest, String> {
     check_security(&layout.bin(), &layout::bin_sddl())?;
     check_security(&layout.jobs(), &layout::jobs_sddl(&user))?;
     check_security(&layout.out(), &layout::out_sddl(&user))?;
+    // Checked again here: Process Monitor may have been opened since the server checked.
+    let running =
+        win::running_image_names().map_err(|e| format!("cannot list running processes: {e}"))?;
+    crate::capture::ensure_procmon_not_running(&running)?;
     win::verify_microsoft_signature(&layout.procmon())
         .map_err(|e| format!("{}: {e}", layout.procmon().display()))?;
     read_request(&layout.request())

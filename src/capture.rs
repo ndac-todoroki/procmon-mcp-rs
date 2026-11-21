@@ -15,6 +15,20 @@ pub const OVERHEAD: Duration = Duration::from_secs(90);
 /// Progress while waiting: seconds elapsed and the expected total.
 pub type ProgressFn<'a> = dyn FnMut(f64, f64) + 'a;
 
+/// Fails with a message meant for the user when Process Monitor is already running.
+///
+/// A second instance cannot capture: it exits without writing events. It is not closed
+/// for the user, since that would discard whatever they are capturing in it.
+pub fn ensure_procmon_not_running(running: &[String]) -> Result<(), String> {
+    match crate::win::find_procmon(running.iter().map(String::as_str)) {
+        None => Ok(()),
+        Some(name) => Err(format!(
+            "Process Monitor ({name}) is already running, and only one instance can capture \
+             at a time. Ask the user to close Process Monitor, then try the capture again."
+        )),
+    }
+}
+
 /// Writes `request`, calls `start` (which starts the elevated runner) and waits until the
 /// runner reports. Returns the job directory holding the log.
 pub fn run_capture(
@@ -218,5 +232,24 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("task not found"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod already_running_tests {
+    use super::*;
+
+    #[test]
+    fn asks_the_user_to_close_a_running_process_monitor() {
+        let running = ["explorer.exe".to_owned(), "Procmon64.exe".to_owned()];
+        let err = ensure_procmon_not_running(&running).unwrap_err();
+        assert!(err.contains("Procmon64.exe"), "{err}");
+        assert!(err.to_lowercase().contains("close"), "{err}");
+    }
+
+    #[test]
+    fn passes_when_no_process_monitor_runs() {
+        let running = ["explorer.exe".to_owned(), "procmon-mcp.exe".to_owned()];
+        assert_eq!(ensure_procmon_not_running(&running), Ok(()));
     }
 }
