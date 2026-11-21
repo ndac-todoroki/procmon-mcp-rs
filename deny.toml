@@ -1,0 +1,20 @@
+# Supply-chain policy. Run `cargo deny check` after changing dependencies.
+
+[graph]
+# The executable only ships for Windows; ignore crates that are pulled in only on other targets.
+targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
