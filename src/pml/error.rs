@@ -8,6 +8,8 @@ pub enum PmlError {
     NotPml,
     /// The format version is one this reader does not understand.
     UnsupportedVersion(u32),
+    /// A structure extends past the end of the file or of its enclosing record.
+    Truncated,
 }
 
 impl fmt::Display for PmlError {
@@ -18,6 +20,7 @@ impl fmt::Display for PmlError {
             PmlError::UnsupportedVersion(v) => {
                 write!(f, "unsupported PML format version {v} (only version 9 is supported)")
             }
+            PmlError::Truncated => f.write_str("PML file is truncated or corrupt"),
         }
     }
 }

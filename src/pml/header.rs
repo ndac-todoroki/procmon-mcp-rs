@@ -1,17 +1,25 @@
 use super::PmlError;
+use super::bytes::ByteReader;
 
 /// The fixed-size header at the start of a PML file.
 #[derive(Debug, Clone)]
 pub struct Header {}
 
 impl Header {
+    /// Size of the header in version 9.
+    pub const SIZE: usize = 0x3A8;
+
     pub fn parse(bytes: &[u8]) -> Result<Header, PmlError> {
-        if !bytes.starts_with(b"PML_") {
+        let mut r = ByteReader::new(bytes);
+        if r.bytes(4).map_err(|_| PmlError::NotPml)? != b"PML_" {
             return Err(PmlError::NotPml);
         }
-        let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        let version = r.u32()?;
         if version != 9 {
             return Err(PmlError::UnsupportedVersion(version));
+        }
+        if bytes.len() < Self::SIZE {
+            return Err(PmlError::Truncated);
         }
         Ok(Header {})
     }
@@ -32,6 +40,14 @@ mod tests {
     fn rejects_file_without_pml_signature() {
         let bytes = vec![0u8; 0x3A8];
         assert!(matches!(Header::parse(&bytes), Err(PmlError::NotPml)));
+    }
+
+    #[test]
+    fn reports_truncation_instead_of_panicking_on_short_header() {
+        let mut bytes = header_bytes(9);
+        bytes.truncate(0x100);
+        assert!(matches!(Header::parse(&bytes), Err(PmlError::Truncated)));
+        assert!(matches!(Header::parse(b"PML_"), Err(PmlError::Truncated)));
     }
 
     #[test]
