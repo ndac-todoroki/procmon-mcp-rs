@@ -67,6 +67,25 @@ pub struct Summary {
     pub by_operation_path: Vec<OperationPath>,
     /// Files opened at least `PERIODIC_MIN_OPENS` times by the same process.
     pub periodic_opens: Vec<PeriodicOpen>,
+    /// Operations whose NTSTATUS is an error, by descending count.
+    pub failures: Vec<Failure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub operation: String,
+    pub path: String,
+    /// NTSTATUS.
+    pub result: u32,
+    pub count: u64,
+}
+
+const STATUS_END_OF_FILE: u32 = 0xC000_0011;
+
+/// Error severity only: warnings such as NO MORE FILES and BUFFER OVERFLOW are part of
+/// normal enumeration, and END OF FILE ends every complete read.
+fn is_failure(result: u32) -> bool {
+    result >= 0xC000_0000 && result != STATUS_END_OF_FILE
 }
 
 /// Fewer opens than this are not treated as polling.
@@ -101,6 +120,7 @@ pub struct Summarizer {
     by_operation: HashMap<&'static str, u64>,
     by_operation_path: HashMap<(&'static str, String), (u64, Option<u64>)>,
     open_times: HashMap<(String, String), Vec<u64>>,
+    failures: HashMap<(&'static str, String, u32), u64>,
 }
 
 impl Summarizer {
@@ -128,6 +148,12 @@ impl Summarizer {
         *self.by_operation.entry(event.operation_name()).or_default() += 1;
 
         let path = event.path.clone().unwrap_or_default();
+        if is_failure(event.result) {
+            *self
+                .failures
+                .entry((event.operation_name(), path.clone(), event.result))
+                .or_default() += 1;
+        }
         if event.operation_name() == "CreateFile" {
             let name = process.map(|p| p.name.clone()).unwrap_or_default();
             self.open_times
@@ -154,6 +180,7 @@ impl Summarizer {
             by_operation: rank(self.by_operation),
             by_operation_path: rank_operation_paths(self.by_operation_path),
             periodic_opens: periodic_opens(self.open_times),
+            failures: rank_failures(self.failures),
         }
     }
 }
@@ -164,6 +191,26 @@ fn rank<K: ToString>(counts: HashMap<K, u64>) -> Ranking {
         .map(|(k, n)| (k.to_string(), n))
         .collect();
     v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v
+}
+
+fn rank_failures(counts: HashMap<(&'static str, String, u32), u64>) -> Vec<Failure> {
+    let mut v: Vec<Failure> = counts
+        .into_iter()
+        .map(|((operation, path, result), count)| Failure {
+            operation: operation.to_owned(),
+            path,
+            result,
+            count,
+        })
+        .collect();
+    v.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.operation.cmp(&b.operation))
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.result.cmp(&b.result))
+    });
     v
 }
 
@@ -440,6 +487,53 @@ mod tests {
                 min_ms: 50.0,
                 max_ms: 150.0,
             }]
+        );
+    }
+
+    fn with_result(mut e: Event, result: u32) -> Event {
+        e.result = result;
+        e
+    }
+
+    #[test]
+    fn ranks_error_results_but_not_end_of_file_or_warnings() {
+        let p = process("a.exe", 1);
+        let events = [
+            (
+                with_result(fs(CREATE_FILE, ".cfg", 0), 0xC000_0034),
+                p.clone(),
+            ),
+            (
+                with_result(fs(CREATE_FILE, ".cfg", 1), 0xC000_0034),
+                p.clone(),
+            ),
+            (
+                with_result(fs(CREATE_FILE, "locked", 2), 0xC000_0043),
+                p.clone(),
+            ),
+            // END OF FILE ends every full read; it is not a failure.
+            (with_result(fs(READ_FILE, "f", 3), 0xC000_0011), p.clone()),
+            // NO MORE FILES is a warning (0x8...), the normal end of a directory listing.
+            (with_result(fs(READ_FILE, "d", 4), 0x8000_0006), p.clone()),
+            (fs(READ_FILE, "ok", 5), p.clone()),
+        ];
+        let s = summarize(Filter::default(), &events);
+        assert_eq!(
+            s.failures,
+            [
+                Failure {
+                    operation: "CreateFile".into(),
+                    path: ".cfg".into(),
+                    result: 0xC000_0034,
+                    count: 2
+                },
+                Failure {
+                    operation: "CreateFile".into(),
+                    path: "locked".into(),
+                    result: 0xC000_0043,
+                    count: 1
+                },
+            ]
         );
     }
 }
