@@ -5,5 +5,6 @@ mod protocol;
 mod text;
 mod win;
 mod wizard;
+mod worker;
 
 fn main() {}
