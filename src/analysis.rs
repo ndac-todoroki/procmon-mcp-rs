@@ -65,6 +65,21 @@ pub struct Summary {
     pub by_operation: Ranking,
     /// Sorted by descending count, then operation and path.
     pub by_operation_path: Vec<OperationPath>,
+    /// Files opened at least `PERIODIC_MIN_OPENS` times by the same process.
+    pub periodic_opens: Vec<PeriodicOpen>,
+}
+
+/// Fewer opens than this are not treated as polling.
+pub const PERIODIC_MIN_OPENS: usize = 5;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeriodicOpen {
+    pub process: String,
+    pub path: String,
+    pub count: u64,
+    pub mean_ms: f64,
+    pub min_ms: f64,
+    pub max_ms: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +100,7 @@ pub struct Summarizer {
     by_process: HashMap<String, u64>,
     by_operation: HashMap<&'static str, u64>,
     by_operation_path: HashMap<(&'static str, String), (u64, Option<u64>)>,
+    open_times: HashMap<(String, String), Vec<u64>>,
 }
 
 impl Summarizer {
@@ -112,6 +128,13 @@ impl Summarizer {
         *self.by_operation.entry(event.operation_name()).or_default() += 1;
 
         let path = event.path.clone().unwrap_or_default();
+        if event.operation_name() == "CreateFile" {
+            let name = process.map(|p| p.name.clone()).unwrap_or_default();
+            self.open_times
+                .entry((name, path.clone()))
+                .or_default()
+                .push(event.timestamp);
+        }
         let entry = self
             .by_operation_path
             .entry((event.operation_name(), path))
@@ -130,6 +153,7 @@ impl Summarizer {
             by_process: rank(self.by_process),
             by_operation: rank(self.by_operation),
             by_operation_path: rank_operation_paths(self.by_operation_path),
+            periodic_opens: periodic_opens(self.open_times),
         }
     }
 }
@@ -140,6 +164,35 @@ fn rank<K: ToString>(counts: HashMap<K, u64>) -> Ranking {
         .map(|(k, n)| (k.to_string(), n))
         .collect();
     v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v
+}
+
+fn periodic_opens(open_times: HashMap<(String, String), Vec<u64>>) -> Vec<PeriodicOpen> {
+    const TICKS_PER_MS: f64 = 10_000.0;
+    let mut v: Vec<PeriodicOpen> = open_times
+        .into_iter()
+        .filter(|(_, times)| times.len() >= PERIODIC_MIN_OPENS)
+        .map(|((process, path), times)| {
+            let intervals: Vec<f64> = times
+                .windows(2)
+                .map(|w| w[1].saturating_sub(w[0]) as f64 / TICKS_PER_MS)
+                .collect();
+            PeriodicOpen {
+                process,
+                path,
+                count: times.len() as u64,
+                mean_ms: intervals.iter().sum::<f64>() / intervals.len() as f64,
+                min_ms: intervals.iter().copied().fold(f64::INFINITY, f64::min),
+                max_ms: intervals.iter().copied().fold(0.0, f64::max),
+            }
+        })
+        .collect();
+    v.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.process.cmp(&b.process))
+            .then_with(|| a.path.cmp(&b.path))
+    });
     v
 }
 
@@ -361,6 +414,32 @@ mod tests {
                     bytes: Some(10)
                 },
             ]
+        );
+    }
+
+    const MS: u64 = 10_000; // FILETIME ticks per millisecond
+
+    #[test]
+    fn reports_intervals_of_files_opened_five_times_or_more() {
+        let p = process("a.exe", 1);
+        let mut events: Vec<_> = [0, 100, 250, 300, 400]
+            .into_iter()
+            .map(|ms| (fs(CREATE_FILE, "polled", ms * MS), p.clone()))
+            .collect();
+        // Opened only four times: not considered periodic.
+        events.extend((0..4).map(|i| (fs(CREATE_FILE, "rare", i * MS), p.clone())));
+
+        let s = summarize(Filter::default(), &events);
+        assert_eq!(
+            s.periodic_opens,
+            [PeriodicOpen {
+                process: "a.exe".into(),
+                path: "polled".into(),
+                count: 5,
+                mean_ms: 100.0,
+                min_ms: 50.0,
+                max_ms: 150.0,
+            }]
         );
     }
 }
