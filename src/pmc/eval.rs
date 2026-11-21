@@ -27,7 +27,12 @@ fn matches<S: FilterSubject + ?Sized>(rule: &FilterRule, subject: &S) -> bool {
     let expected = rule.value.to_lowercase();
     match rule.relation {
         Relation::Is => actual == expected,
-        _ => false,
+        Relation::IsNot => actual != expected,
+        Relation::BeginsWith => actual.starts_with(&expected),
+        Relation::EndsWith => actual.ends_with(&expected),
+        Relation::Contains => actual.contains(&expected),
+        Relation::Excludes => !actual.contains(&expected),
+        Relation::LessThan | Relation::MoreThan => false,
     }
 }
 
@@ -100,6 +105,32 @@ mod tests {
             (Column::PATH, "c:\\üNÏCODE"),
         ] {
             assert!(!is_included(&rules, &event(&[(column, value)])), "{value}");
+        }
+    }
+
+    #[test]
+    fn text_relations_match_as_their_names_say() {
+        let path = "C:\\Windows\\System32\\Kernel32.dll";
+        let cases = [
+            (Relation::Is, "c:\\windows\\system32\\kernel32.dll", true),
+            (Relation::Is, "C:\\Windows", false),
+            (Relation::IsNot, "C:\\Windows", true),
+            (Relation::IsNot, path, false),
+            (Relation::BeginsWith, "c:\\windows\\", true),
+            (Relation::BeginsWith, "kernel32", false),
+            (Relation::EndsWith, ".DLL", true),
+            (Relation::EndsWith, "C:\\", false),
+            (Relation::Contains, "system32", true),
+            (Relation::Contains, "SysWOW64", false),
+            (Relation::Excludes, "SysWOW64", true),
+            (Relation::Excludes, "system32", false),
+        ];
+        for (relation, value, should_match) in cases {
+            let rules = [exclude(Column::PATH, relation, value)];
+
+            let included = is_included(&rules, &event(&[(Column::PATH, path)]));
+
+            assert_eq!(included, !should_match, "{relation:?} {value}");
         }
     }
 }
