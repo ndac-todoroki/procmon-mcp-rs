@@ -12,38 +12,44 @@ use windows_sys::Win32::Security::Authorization::{
     SE_FILE_OBJECT, SetNamedSecurityInfoW,
 };
 use windows_sys::Win32::Security::{
-    ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR,
+    ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
+    OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
 };
 
-/// Replaces the DACL of `path` with the one in `sddl` (e.g. `D:PAI(A;OICI;FA;;;BA)`),
-/// protected from inheriting the parent's entries.
-pub fn set_dacl(path: &Path, sddl: &str) -> io::Result<()> {
+/// What we read and write: the owner (who can always rewrite the DACL) and the DACL.
+const OWNER_AND_DACL: u32 = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+
+/// Sets the owner and DACL of `path` from `sddl` (e.g. `O:BAD:PAI(A;OICI;FA;;;BA)`),
+/// with the DACL protected from inheriting the parent's entries. Both parts are required.
+pub fn set_security(path: &Path, sddl: &str) -> io::Result<()> {
     let descriptor = Descriptor::from_sddl(sddl)?;
+    let mut owner: PSID = null_mut();
     let mut present = 0;
     let mut defaulted = 0;
     let mut dacl: *mut ACL = null_mut();
-    // SAFETY: `descriptor` is a valid self-relative descriptor; `dacl` points into it and
-    // is used only while it is alive.
-    if unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted) }
-        == 0
-    {
-        return Err(io::Error::last_os_error());
+    // SAFETY: `descriptor` is a valid self-relative descriptor; `owner` and `dacl` point
+    // into it and are used only while it is alive.
+    unsafe {
+        if GetSecurityDescriptorOwner(descriptor.0, &mut owner, &mut defaulted) == 0
+            || GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
     }
-    if present == 0 {
+    if owner.is_null() || present == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "SDDL has no DACL",
+            "SDDL must give both an owner (O:) and a DACL (D:)",
         ));
     }
     let wide = to_wide(path);
-    // SAFETY: `wide` is NUL-terminated and `dacl` is valid for the call.
+    // SAFETY: `wide` is NUL-terminated; `owner` and `dacl` are valid for the call.
     let status = unsafe {
         SetNamedSecurityInfoW(
             wide.as_ptr(),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            null_mut(),
+            OWNER_AND_DACL | PROTECTED_DACL_SECURITY_INFORMATION,
+            owner,
             null_mut(),
             dacl,
             null_mut(),
@@ -52,8 +58,8 @@ pub fn set_dacl(path: &Path, sddl: &str) -> io::Result<()> {
     win32_result(status)
 }
 
-/// The DACL of `path` as an SDDL string.
-pub fn dacl_sddl(path: &Path) -> io::Result<String> {
+/// The owner and DACL of `path` as an SDDL string, in the form `set_security` takes.
+pub fn security_sddl(path: &Path) -> io::Result<String> {
     let wide = to_wide(path);
     let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
     // SAFETY: on success the system allocates `descriptor`, freed by `Descriptor`'s drop.
@@ -61,7 +67,7 @@ pub fn dacl_sddl(path: &Path) -> io::Result<String> {
         GetNamedSecurityInfoW(
             wide.as_ptr(),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
+            OWNER_AND_DACL,
             null_mut(),
             null_mut(),
             null_mut(),
@@ -70,7 +76,7 @@ pub fn dacl_sddl(path: &Path) -> io::Result<String> {
         )
     };
     win32_result(status)?;
-    Descriptor(descriptor).to_dacl_sddl()
+    Descriptor(descriptor).to_sddl()
 }
 
 /// A security descriptor allocated with LocalAlloc by the system.
@@ -95,7 +101,7 @@ impl Descriptor {
         Ok(Descriptor(descriptor))
     }
 
-    fn to_dacl_sddl(&self) -> io::Result<String> {
+    fn to_sddl(&self) -> io::Result<String> {
         let mut text = null_mut();
         let mut len = 0u32;
         // SAFETY: `self.0` is a valid descriptor; `text` is LocalFree'd below.
@@ -103,7 +109,7 @@ impl Descriptor {
             ConvertSecurityDescriptorToStringSecurityDescriptorW(
                 self.0,
                 SDDL_REVISION_1,
-                DACL_SECURITY_INFORMATION,
+                OWNER_AND_DACL,
                 &mut text,
                 &mut len,
             )
@@ -162,24 +168,37 @@ mod tests {
         }
     }
 
-    // Everyone keeps full control so the test can still clean up without elevation.
-    const SDDL: &str = "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;WD)";
+    fn sddl_owned_by_me() -> String {
+        // Owner: the current user, which needs no elevation to set. Everyone keeps full
+        // control so the test can still clean up.
+        let me = crate::win::current_user_sid().unwrap();
+        format!("O:{me}D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;WD)")
+    }
 
     #[test]
-    fn set_dacl_replaces_entries_and_blocks_inheritance() {
+    fn set_security_replaces_owner_and_entries_and_blocks_inheritance() {
         let dir = TempDir::new("set");
-        set_dacl(&dir.0, SDDL).unwrap();
-        assert_eq!(dacl_sddl(&dir.0).unwrap(), SDDL);
+        let sddl = sddl_owned_by_me();
+        set_security(&dir.0, &sddl).unwrap();
+        assert_eq!(security_sddl(&dir.0).unwrap(), sddl);
+    }
+
+    #[test]
+    fn rejects_sddl_without_owner_or_dacl() {
+        let dir = TempDir::new("partial");
+        assert!(set_security(&dir.0, "D:PAI(A;OICI;FA;;;WD)").is_err());
+        let me = crate::win::current_user_sid().unwrap();
+        assert!(set_security(&dir.0, &format!("O:{me}")).is_err());
     }
 
     #[test]
     fn rejects_malformed_sddl() {
         let dir = TempDir::new("bad");
-        assert!(set_dacl(&dir.0, "D:(not sddl").is_err());
+        assert!(set_security(&dir.0, "D:(not sddl").is_err());
     }
 
     #[test]
     fn reading_a_missing_path_fails() {
-        assert!(dacl_sddl(Path::new(r"Z:\no\such\dir")).is_err());
+        assert!(security_sddl(Path::new(r"Z:\no\such\dir")).is_err());
     }
 }
