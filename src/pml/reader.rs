@@ -53,6 +53,19 @@ impl<R: Read + Seek> PmlReader<R> {
         self.processes.get(&index)
     }
 
+    /// Calls `f` for each event in file order, together with its process.
+    pub fn for_each_event(
+        &mut self,
+        mut f: impl FnMut(&Event, Option<&Process>),
+    ) -> Result<(), PmlError> {
+        let is_64bit = self.header.is_64bit;
+        for &off in &self.event_offsets {
+            let event = read_event(&mut self.inner, off, is_64bit)?;
+            f(&event, self.processes.get(&event.process_index));
+        }
+        Ok(())
+    }
+
     /// Iterates over events in file order.
     pub fn events(&mut self) -> impl Iterator<Item = Result<Event, PmlError>> + '_ {
         let offsets = std::mem::take(&mut self.event_offsets);

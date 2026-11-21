@@ -1,8 +1,17 @@
 //! Aggregates events into the summary returned to MCP clients.
 
 use std::collections::HashMap;
+use std::path::Path;
 
-use crate::pml::{Detail, Event, EventClass, Process};
+use crate::pml::{Detail, Event, EventClass, PmlError, PmlReader, Process};
+
+/// Reads a PML file and summarizes the events that match `filter`.
+pub fn summarize_file(path: &Path, filter: Filter) -> Result<Summary, PmlError> {
+    let mut reader = PmlReader::open(path)?;
+    let mut summarizer = Summarizer::new(filter);
+    reader.for_each_event(|event, process| summarizer.add(event, process))?;
+    Ok(summarizer.finish())
+}
 
 /// Conditions an event must meet to be counted. String comparisons ignore case.
 #[derive(Debug, Clone, Default)]
@@ -86,6 +95,16 @@ const STATUS_END_OF_FILE: u32 = 0xC000_0011;
 /// normal enumeration, and END OF FILE ends every complete read.
 fn is_failure(result: u32) -> bool {
     result >= 0xC000_0000 && result != STATUS_END_OF_FILE
+}
+
+impl Summary {
+    /// Seconds between the first and last matching event; 0 when there are none.
+    pub fn duration_secs(&self) -> f64 {
+        match (self.first_timestamp, self.last_timestamp) {
+            (Some(first), Some(last)) => last.saturating_sub(first) as f64 / 1e7,
+            _ => 0.0,
+        }
+    }
 }
 
 /// Fewer opens than this are not treated as polling.
