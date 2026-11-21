@@ -30,6 +30,18 @@ fn reference_file_round_trips_byte_for_byte() {
 }
 
 #[test]
+fn reference_filter_rules_round_trip_byte_for_byte() {
+    let Some(bytes) = reference_pmc() else { return };
+    let config = pmc::parse(&bytes).unwrap();
+    let data = config.data("FilterRules").unwrap();
+
+    let rules = pmc::decode_filter_rules(data).unwrap();
+
+    assert_eq!(rules.len(), 24);
+    assert_eq!(pmc::encode_filter_rules(&rules), data);
+}
+
+#[test]
 fn reference_file_has_the_24_records_procmon_exports() {
     let Some(bytes) = reference_pmc() else { return };
 
