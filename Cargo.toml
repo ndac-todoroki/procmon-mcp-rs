@@ -11,7 +11,7 @@ publish = false
 nyquest = { version = "0.5.0", features = ["blocking"] }
 nyquest-backend-winhttp = { version = "0.2.0", features = ["blocking"] }
 serde_json = "1.0.154"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_WinTrust", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_System_Variant", "Win32_System_Ole", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_WinTrust", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_System_Variant", "Win32_System_Ole", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_Console"] }
 
 [profile.release]
 lto = true

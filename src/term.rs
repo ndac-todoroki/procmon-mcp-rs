@@ -26,6 +26,17 @@ impl Style {
         Style { enabled: false }
     }
 
+    /// Colors for messages on stderr: only on a terminal that understands escape
+    /// sequences, and never when `NO_COLOR` is set (https://no-color.org).
+    pub fn for_stderr() -> Style {
+        use std::io::IsTerminal;
+        let wanted = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+            && std::io::stderr().is_terminal();
+        Style {
+            enabled: wanted && crate::win::enable_ansi_on_stderr(),
+        }
+    }
+
     /// Wraps `text` in the escape sequence for `color` when colors are enabled.
     pub fn paint(&self, text: &str, color: Color) -> String {
         if !self.enabled {

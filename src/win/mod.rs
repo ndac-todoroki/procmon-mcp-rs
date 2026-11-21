@@ -1,12 +1,14 @@
 //! Safe wrappers over the Windows APIs this tool needs. All `unsafe` code lives here.
 
 mod acl;
+mod console;
 mod process;
 mod registry;
 mod signature;
 mod system;
 
 pub use acl::{security_sddl, set_security};
+pub use console::enable_ansi_on_stderr;
 pub use process::{find_procmon, running_image_names};
 pub use registry::{KeySnapshot, RegValue, restore_hkcu, snapshot_hkcu};
 pub use signature::{SignatureError, verify_microsoft_signature};
