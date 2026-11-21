@@ -38,3 +38,20 @@ fn huion_log_process_table_contains_huion_tablet() {
     assert_eq!(huion.len(), 1);
     assert!(huion[0].pid > 0);
 }
+
+#[test]
+fn huion_log_has_7840_process_profiling_events_among_14266() {
+    let Some(path) = reference_file("Logfile.PML") else { return };
+    let mut reader = PmlReader::open(&path).unwrap();
+    let mut total = 0;
+    let mut profiling = 0;
+    for event in reader.events() {
+        let event = event.unwrap();
+        total += 1;
+        if event.operation_name() == "Process Profiling" {
+            profiling += 1;
+        }
+    }
+    assert_eq!(total, 14_266);
+    assert_eq!(profiling, 7_840);
+}
