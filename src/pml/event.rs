@@ -14,6 +14,19 @@ pub enum EventClass {
 }
 
 impl EventClass {
+    /// The Event Class column text, as filter rules spell it.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            EventClass::Unknown => "Unknown",
+            EventClass::Process => "Process",
+            EventClass::Registry => "Registry",
+            EventClass::FileSystem => "File System",
+            EventClass::Profiling => "Profiling",
+            EventClass::Network => "Network",
+            EventClass::Ipc => "IPC",
+        }
+    }
+
     pub(crate) fn from_u32(v: u32) -> EventClass {
         match v {
             1 => EventClass::Process,

@@ -2,6 +2,7 @@
 
 pub mod analysis;
 pub mod cli;
+pub mod event_filter;
 pub mod mcp;
 pub mod pmc;
 pub mod pml;
