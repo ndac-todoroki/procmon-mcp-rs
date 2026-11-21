@@ -14,4 +14,5 @@ pub mod pml;
 pub mod report;
 pub mod runner;
 pub mod task;
+pub mod term;
 pub mod win;
