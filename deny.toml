@@ -14,6 +14,8 @@ confidence-threshold = 0.93
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Lets the unpublished setup crate depend on the server crate by path.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
