@@ -1,11 +1,75 @@
-//! Renders a [`Summary`] as the plain text returned to MCP clients.
+//! Renders a [`Summary`] as text for people (CLI) and as JSON for MCP clients.
 
 use std::fmt::Write;
+
+use serde_json::{Value, json};
 
 use crate::analysis::Summary;
 use crate::pml::status_name;
 
 const MIB: f64 = 1024.0 * 1024.0;
+
+/// The structured form of a summary, returned as MCP `structuredContent`.
+///
+/// Each section keeps its number of distinct entries next to the top `top_n`, so a reader
+/// can tell when entries were cut off. Derived values are rounded; raw counts are exact.
+pub fn to_json(summary: &Summary, top_n: usize) -> Value {
+    let secs = summary.duration_secs().max(0.001);
+    let section = |items: Vec<Value>| json!({"distinct": items.len(), "top": items.into_iter().take(top_n).collect::<Vec<_>>()});
+    json!({
+        "total_events": summary.total,
+        "duration_secs": round(summary.duration_secs(), 3),
+        "events_per_sec": round(summary.total as f64 / secs, 1),
+        "top_n": top_n,
+        "by_process": section(summary.by_process.iter().map(|p| {
+            json!({"name": p.name, "pid": p.pid, "count": p.count})
+        }).collect()),
+        "by_operation": section(summary.by_operation.iter().map(|(op, count)| {
+            json!({"operation": op, "count": count})
+        }).collect()),
+        "by_operation_path": section(summary.by_operation_path.iter().map(|op| {
+            let mut v = json!({"operation": op.operation, "path": op.path, "count": op.count});
+            if let Some(bytes) = op.bytes {
+                let mib = bytes as f64 / MIB;
+                v["bytes"] = json!(bytes);
+                v["mib"] = json!(round(mib, 2));
+                v["mib_per_sec"] = json!(round(mib / secs, 2));
+            }
+            v
+        }).collect()),
+        "periodic_opens": section(summary.periodic_opens.iter().map(|p| {
+            json!({
+                "process": p.process,
+                "path": p.path,
+                "count": p.count,
+                "mean_interval_ms": round(p.mean_ms, 1),
+                "min_interval_ms": round(p.min_ms, 1),
+                "max_interval_ms": round(p.max_ms, 1),
+            })
+        }).collect()),
+        "failures": section(summary.failures.iter().map(|f| {
+            json!({
+                "operation": f.operation,
+                "path": f.path,
+                "count": f.count,
+                "status": status_text(f.result),
+                "code": format!("0x{:08X}", f.result),
+            })
+        }).collect()),
+    })
+}
+
+fn round(x: f64, decimals: i32) -> f64 {
+    let scale = 10f64.powi(decimals);
+    (x * scale).round() / scale
+}
+
+/// The Result column text: the NTSTATUS name, or its hex code when we do not know it.
+fn status_text(code: u32) -> String {
+    status_name(code)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("0x{code:08X}"))
+}
 
 /// Renders at most `top_n` entries per section.
 pub fn render(summary: &Summary, top_n: usize) -> String {
@@ -62,10 +126,14 @@ pub fn render(summary: &Summary, top_n: usize) -> String {
     if !summary.failures.is_empty() {
         out.push_str("\n## Failed operations\n");
         for f in summary.failures.iter().take(top_n) {
-            let result = status_name(f.result)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("0x{:08X}", f.result));
-            let _ = writeln!(out, "- {} x {} {} {}", f.count, f.operation, result, f.path);
+            let _ = writeln!(
+                out,
+                "- {} x {} {} {}",
+                f.count,
+                f.operation,
+                status_text(f.result),
+                f.path
+            );
         }
     }
     out
@@ -173,5 +241,45 @@ Events: 30 / Duration: 2.0 s / 15 events/s
         let mut s = sample();
         s.failures[0].result = 0xC0DE_0001;
         assert!(render(&s, 15).contains("- 10 x CreateFile 0xC0DE0001 C:\\.cfg"));
+    }
+
+    #[test]
+    fn json_carries_raw_and_derived_values_per_section() {
+        assert_eq!(
+            to_json(&sample(), 15),
+            json!({
+                "total_events": 30,
+                "duration_secs": 2.0,
+                "events_per_sec": 15.0,
+                "top_n": 15,
+                "by_process": {"distinct": 1, "top": [
+                    {"name": "app.exe", "pid": 7, "count": 30}
+                ]},
+                "by_operation": {"distinct": 2, "top": [
+                    {"operation": "ReadFile", "count": 20},
+                    {"operation": "CreateFile", "count": 10}
+                ]},
+                "by_operation_path": {"distinct": 2, "top": [
+                    {"operation": "ReadFile", "path": "C:\\a.cfg", "count": 20,
+                     "bytes": 4_194_304, "mib": 4.0, "mib_per_sec": 2.0},
+                    {"operation": "CreateFile", "path": "C:\\a.cfg", "count": 10}
+                ]},
+                "periodic_opens": {"distinct": 1, "top": [
+                    {"process": "app.exe", "path": "C:\\a.cfg", "count": 10,
+                     "mean_interval_ms": 312.4, "min_interval_ms": 284.0, "max_interval_ms": 329.0}
+                ]},
+                "failures": {"distinct": 1, "top": [
+                    {"operation": "CreateFile", "path": "C:\\.cfg", "count": 10,
+                     "status": "NAME NOT FOUND", "code": "0xC0000034"}
+                ]}
+            })
+        );
+    }
+
+    #[test]
+    fn json_sections_keep_distinct_count_beyond_top_n() {
+        let json = to_json(&sample(), 1);
+        assert_eq!(json["by_operation"]["distinct"], 2);
+        assert_eq!(json["by_operation"]["top"].as_array().unwrap().len(), 1);
     }
 }
