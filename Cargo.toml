@@ -1,0 +1,15 @@
+[package]
+name = "procmon-mcp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "MCP server that captures with Sysinternals Process Monitor and summarizes PML logs"
+license = "MIT"
+publish = false
+
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
