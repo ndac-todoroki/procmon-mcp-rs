@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use crate::download::{self, Endpoint, Fetch};
 use crate::layout::{self, Layout};
 use crate::task;
+use crate::term::{Color, Style};
 use crate::win;
 
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
@@ -23,36 +24,75 @@ pub struct InstallOptions {
 /// Running it again repairs or refreshes an existing installation.
 pub fn install(options: &InstallOptions) -> Result<(), String> {
     require_elevated()?;
+    let style = Style::for_stderr();
+    let layout = Layout::system().map_err(|e| format!("cannot locate ProgramData: {e}"))?;
+    // Shown even with --accept-eula, so every run records what it is about to change.
+    eprint!("{}", install_notice(&layout, std::env::consts::ARCH, style));
     if !options.accept_eula && !confirm_eula(std::io::stdin().lock(), std::io::stderr()) {
         return Err("the Sysinternals license terms were not accepted".to_owned());
     }
-    let layout = Layout::system().map_err(|e| format!("cannot locate ProgramData: {e}"))?;
+    eprintln!();
     let user = win::current_user_sid().map_err(|e| format!("cannot identify the user: {e}"))?;
 
-    prepare_root(&layout)?;
-    for (dir, sddl) in [
-        (layout.bin(), layout::bin_sddl()),
-        (layout.jobs(), layout::jobs_sddl(&user)),
-        (layout.out(), layout::out_sddl(&user)),
-    ] {
-        ensure_plain_dir(&dir)?;
-        win::set_security(&dir, &sddl)
-            .map_err(|e| format!("cannot set permissions on {}: {e}", dir.display()))?;
-    }
-    copy_self(&layout)?;
-    match update_procmon(&layout)? {
-        UpdateOutcome::Updated => {
-            eprintln!("Downloaded and verified {}", layout.procmon().display())
-        }
-        UpdateOutcome::UpToDate => eprintln!("{} is up to date", layout.procmon().display()),
-    }
-    register_task(&layout, &user)?;
+    step(
+        style,
+        &format!("Creating {}", layout.root.display()),
+        || {
+            prepare_root(&layout)?;
+            for (dir, sddl) in [
+                (layout.bin(), layout::bin_sddl()),
+                (layout.jobs(), layout::jobs_sddl(&user)),
+                (layout.out(), layout::out_sddl(&user)),
+            ] {
+                ensure_plain_dir(&dir)?;
+                win::set_security(&dir, &sddl)
+                    .map_err(|e| format!("cannot set permissions on {}: {e}", dir.display()))?;
+            }
+            Ok("Done!")
+        },
+    )?;
+    step(style, "Copying procmon-mcp.exe", || {
+        copy_self(&layout).map(|()| "Done!")
+    })?;
+    step(style, "Downloading Process Monitor", || {
+        update_procmon(&layout).map(|outcome| match outcome {
+            UpdateOutcome::Updated => "Done! (Microsoft signature verified)",
+            UpdateOutcome::UpToDate => "Already up to date.",
+        })
+    })?;
+    step(
+        style,
+        &format!("Registering the scheduled task {}", task::TASK_NAME),
+        || register_task(&layout, &user).map(|()| "Done!"),
+    )?;
 
     eprintln!(
-        "\nInstalled. Add this to mcpServers in Claude Desktop's claude_desktop_config.json:\n\n{}",
-        claude_desktop_entry(&layout.server())
+        "\n{} is installed. Add this to \"mcpServers\" in Claude Desktop's \
+         claude_desktop_config.json:\n\n{}\n",
+        style.paint("procmon-mcp", Color::Accent),
+        style.highlight_json(&claude_desktop_entry(&layout.server()))
     );
     Ok(())
+}
+
+/// Runs one install step, printing `label ... ` and then its result on the same line.
+fn step(
+    style: Style,
+    label: &str,
+    run: impl FnOnce() -> Result<&'static str, String>,
+) -> Result<(), String> {
+    eprint!("{label} ... ");
+    let _ = std::io::stderr().flush();
+    match run() {
+        Ok(result) => {
+            eprintln!("{}", style.paint(result, Color::Success));
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("{}", style.paint("Failed.", Color::Warning));
+            Err(e)
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -239,14 +279,39 @@ pub fn procmon_download_path(arch: &str) -> &'static str {
     }
 }
 
+/// What install is about to do, shown before asking for consent. It names every download
+/// with its source and destination, so a user can decide before anything is fetched.
+pub fn install_notice(layout: &Layout, arch: &str, style: Style) -> String {
+    let name = style.paint("procmon-mcp", Color::Accent);
+    let url = format!("https://{SYSINTERNALS_LIVE}{}", procmon_download_path(arch));
+    format!(
+        "Welcome to {name} installation!\n\
+         \n\
+         This will:\n\
+         \x20 - create {root} (bin, jobs, out),\n\
+         \x20   writable only by administrators (you may add requests to jobs\n\
+         \x20   and read or delete results in out)\n\
+         \x20 - copy this program to {server}\n\
+         \x20 - download Process Monitor from Microsoft Sysinternals\n\
+         \x20     from {url}\n\
+         \x20     to   {procmon}\n\
+         \x20   and use it only if it carries a valid Microsoft signature\n\
+         \x20 - register the scheduled task \"{task}\", which runs a capture with\n\
+         \x20   administrator rights when Claude asks for one\n\
+         \n\
+         This MCP server starts Process Monitor with /AcceptEula, which accepts the\n\
+         Sysinternals Software License Terms on your behalf:\n\
+         \x20 {EULA_URL}\n",
+        root = layout.root.display(),
+        server = layout.server().display(),
+        procmon = layout.procmon().display(),
+        task = crate::task::TASK_NAME,
+    )
+}
+
 /// Asks whether the user accepts the Sysinternals license. Only an explicit yes counts.
 pub fn confirm_eula(mut input: impl BufRead, mut output: impl Write) -> bool {
-    let _ = write!(
-        output,
-        "procmon-mcp starts Process Monitor with /AcceptEula, which accepts the \
-         Sysinternals Software License Terms on your behalf:\n  {EULA_URL}\n\
-         Do you accept them? [y/N] "
-    );
+    let _ = write!(output, "\nDo you accept them and continue? [y/N] ");
     let _ = output.flush();
     let mut line = String::new();
     if input.read_line(&mut line).is_err() {
@@ -292,11 +357,68 @@ mod tests {
         (ok, String::from_utf8(out).unwrap())
     }
 
+    fn notice() -> String {
+        let layout = Layout::under(Path::new(r"C:\ProgramData"));
+        install_notice(&layout, "x86_64", Style::plain())
+    }
+
     #[test]
-    fn eula_prompt_shows_the_license_url_and_accepts_only_yes() {
+    fn notice_welcomes_and_lists_what_will_be_created_downloaded_and_registered() {
+        let notice = notice();
+        assert!(
+            notice.starts_with("Welcome to procmon-mcp installation!\n"),
+            "{notice}"
+        );
+        for expected in [
+            r"C:\ProgramData\ProcmonMcp",
+            r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe",
+            "https://live.sysinternals.com/Procmon64.exe",
+            r"C:\ProgramData\ProcmonMcp\bin\Procmon64.exe",
+            crate::task::TASK_NAME,
+        ] {
+            assert!(
+                notice.contains(expected),
+                "missing {expected:?} in:\n{notice}"
+            );
+        }
+    }
+
+    #[test]
+    fn notice_explains_that_starting_procmon_accepts_the_license() {
+        let notice = notice();
+        assert!(
+            notice.contains("This MCP server starts Process Monitor with /AcceptEula"),
+            "{notice}"
+        );
+        assert!(notice.contains(EULA_URL), "{notice}");
+    }
+
+    #[test]
+    fn notice_names_the_arm64_build_on_arm64() {
+        let layout = Layout::under(Path::new(r"C:\ProgramData"));
+        let notice = install_notice(&layout, "aarch64", Style::plain());
+        assert!(
+            notice.contains("https://live.sysinternals.com/Procmon64a.exe"),
+            "{notice}"
+        );
+    }
+
+    #[test]
+    fn notice_colors_the_product_name_on_a_terminal() {
+        let layout = Layout::under(Path::new(r"C:\ProgramData"));
+        let on = Style { enabled: true };
+        let notice = install_notice(&layout, "x86_64", on);
+        assert!(notice.starts_with(&format!(
+            "Welcome to {} installation!",
+            on.paint("procmon-mcp", Color::Accent)
+        )));
+    }
+
+    #[test]
+    fn eula_prompt_is_set_apart_by_a_blank_line_and_accepts_only_yes() {
         let (ok, shown) = answer("y\n");
         assert!(ok);
-        assert!(shown.contains(EULA_URL), "{shown}");
+        assert!(shown.starts_with('\n'), "{shown:?}");
         for yes in ["Y\n", "yes\n", " YES \r\n"] {
             assert!(answer(yes).0, "{yes:?}");
         }
