@@ -56,6 +56,14 @@ impl fmt::Display for PmcError {
 impl std::error::Error for PmcError {}
 
 impl Configuration {
+    /// Data of the first record named exactly `name`.
+    pub fn data(&self, name: &str) -> Option<&[u8]> {
+        self.records
+            .iter()
+            .find(|record| record.name == name)
+            .map(|record| record.data.as_slice())
+    }
+
     /// Serializes the records in order.
     ///
     /// # Panics
@@ -219,6 +227,17 @@ mod tests {
         };
 
         assert_eq!(config.to_bytes(), bytes);
+    }
+
+    #[test]
+    fn record_data_is_looked_up_by_exact_name() {
+        let config = Configuration {
+            records: vec![record("Profiling", &[1]), record("Logfile", &[])],
+        };
+
+        assert_eq!(config.data("Profiling"), Some(&[1u8][..]));
+        assert_eq!(config.data("profiling"), None);
+        assert_eq!(config.data("Missing"), None);
     }
 
     #[test]
