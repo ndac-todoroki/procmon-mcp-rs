@@ -30,6 +30,40 @@ impl JobId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// A fresh ID from the system's random number generator.
+    pub fn random() -> std::io::Result<JobId> {
+        let mut bytes = [0u8; 16];
+        crate::win::random_bytes(&mut bytes)?;
+        Ok(JobId(bytes.iter().map(|b| format!("{b:02x}")).collect()))
+    }
+}
+
+/// How a capture ended, written by the runner as the last step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobStatus {
+    Done,
+    Failed(String),
+}
+
+impl JobStatus {
+    pub fn to_json(&self) -> Value {
+        match self {
+            JobStatus::Done => json!({"state": "done"}),
+            JobStatus::Failed(message) => json!({"state": "failed", "message": message}),
+        }
+    }
+
+    pub fn parse(bytes: &[u8]) -> Result<JobStatus, String> {
+        let v: Value = serde_json::from_slice(bytes).map_err(|_| "status is not valid JSON")?;
+        match v["state"].as_str() {
+            Some("done") => Ok(JobStatus::Done),
+            Some("failed") => Ok(JobStatus::Failed(
+                v["message"].as_str().unwrap_or("").to_owned(),
+            )),
+            _ => Err("status has an unknown state".to_owned()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,6 +271,26 @@ mod tests {
         let mut v = request().to_json();
         v["filter"]["color"] = json!("red");
         assert!(CaptureRequest::parse(v.to_string().as_bytes()).is_err());
+    }
+
+    #[test]
+    fn random_ids_are_valid_and_distinct() {
+        let a = JobId::random().unwrap();
+        let b = JobId::random().unwrap();
+        assert!(JobId::parse(a.as_str()).is_ok());
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn status_round_trips_through_json() {
+        for status in [
+            JobStatus::Done,
+            JobStatus::Failed("Procmon did not start".into()),
+        ] {
+            let bytes = status.to_json().to_string().into_bytes();
+            assert_eq!(JobStatus::parse(&bytes), Ok(status));
+        }
+        assert!(JobStatus::parse(br#"{"state":"running"}"#).is_err());
     }
 
     #[test]

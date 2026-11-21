@@ -12,6 +12,9 @@ use std::ptr::null_mut;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+use windows_sys::Win32::Security::Cryptography::{
+    BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+};
 use windows_sys::Win32::Security::{
     GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
 };
@@ -94,6 +97,23 @@ impl Drop for ProcessToken {
         // SAFETY: opened by OpenProcessToken and closed exactly once.
         unsafe { CloseHandle(self.0) };
     }
+}
+
+/// Fills `buf` from the system's preferred random number generator.
+pub fn random_bytes(buf: &mut [u8]) -> io::Result<()> {
+    // SAFETY: the buffer and its length are passed together.
+    let status = unsafe {
+        BCryptGenRandom(
+            null_mut(),
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status < 0 {
+        return Err(io::Error::other(format!("BCryptGenRandom 0x{status:08X}")));
+    }
+    Ok(())
 }
 
 /// `C:\ProgramData` as configured on this system.
