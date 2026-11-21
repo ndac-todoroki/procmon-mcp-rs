@@ -6,22 +6,27 @@ use serde_json::{Value, json};
 
 use crate::analysis::{Filter, summarize_file};
 use crate::cli::DEFAULT_TOP_N;
-use crate::report::render;
+use crate::report::{output_schema, to_json};
 
 /// Upper bound for `top_n`, keeping responses small enough for a model's context.
 const MAX_TOP_N: u64 = 50;
 
-/// Result of a tool run: text for the client, and whether it reports a failure.
+/// Result of a tool run.
 #[derive(Debug, PartialEq)]
 pub struct ToolOutput {
+    /// Text content. For structured results this is the same JSON, serialized, for
+    /// clients that ignore `structuredContent`.
     pub text: String,
+    /// `structuredContent`, conforming to the tool's `outputSchema`.
+    pub structured: Option<Value>,
     pub is_error: bool,
 }
 
 impl ToolOutput {
-    fn ok(text: String) -> Self {
+    fn structured(value: Value) -> Self {
         ToolOutput {
-            text,
+            text: value.to_string(),
+            structured: Some(value),
             is_error: false,
         }
     }
@@ -29,6 +34,7 @@ impl ToolOutput {
     fn error(text: impl Into<String>) -> Self {
         ToolOutput {
             text: text.into(),
+            structured: None,
             is_error: true,
         }
     }
@@ -60,6 +66,7 @@ pub fn definitions() -> Value {
             "required": ["pml_path"],
             "additionalProperties": false
         },
+        "outputSchema": output_schema(),
         "annotations": {"readOnlyHint": true, "openWorldHint": false}
     }])
 }
@@ -92,7 +99,7 @@ fn summarize_log(args: &Value) -> Result<ToolOutput, String> {
         return Err(format!("only .pml files are accepted: {}", path.display()));
     }
     let summary = summarize_file(&path, filter).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(ToolOutput::ok(render(&summary, top_n as usize)))
+    Ok(ToolOutput::structured(to_json(&summary, top_n as usize)))
 }
 
 fn required_string(args: &Value, key: &str) -> Result<String, String> {

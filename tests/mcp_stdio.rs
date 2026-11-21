@@ -66,7 +66,20 @@ fn summarize_log_over_stdio_matches_reference_summary() {
     )]);
     let result = &responses[0]["result"];
     assert_eq!(result["isError"], false);
+    let structured = &result["structuredContent"];
+    assert_eq!(structured["total_events"], 6426);
+    let top = &structured["by_operation_path"]["top"][0];
+    assert_eq!(top["bytes"], 195_454_056);
+    assert_eq!(top["mib"], 186.4);
+    // Clients that ignore structuredContent get the same JSON as text.
     let text = result["content"][0]["text"].as_str().unwrap();
-    assert!(text.starts_with("Events: 6426 /"), "{text}");
-    assert!(text.contains("186.4 MiB total"), "{text}");
+    assert_eq!(&serde_json::from_str::<Value>(text).unwrap(), structured);
+}
+
+#[test]
+fn summarize_log_declares_its_output_schema() {
+    let responses = exchange(&[modern(1, "tools/list", json!({}))]);
+    let tool = &responses[0]["result"]["tools"][0];
+    assert_eq!(tool["outputSchema"]["type"], "object");
+    assert!(tool["outputSchema"]["properties"]["total_events"].is_object());
 }

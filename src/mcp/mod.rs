@@ -169,10 +169,14 @@ impl Server {
                 let output = tools::call(name, &arguments).ok_or_else(|| {
                     RpcError::new(INVALID_PARAMS, format!("Unknown tool: {name}"))
                 })?;
-                Ok(json!({
+                let mut result = json!({
                     "content": [{"type": "text", "text": output.text}],
                     "isError": output.is_error,
-                }))
+                });
+                if let Some(structured) = output.structured {
+                    result["structuredContent"] = structured;
+                }
+                Ok(result)
             }
             _ => Err(RpcError::new(
                 METHOD_NOT_FOUND,
