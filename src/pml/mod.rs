@@ -6,6 +6,7 @@
 mod bytes;
 mod error;
 mod header;
+mod tables;
 
 pub use error::PmlError;
 pub use header::Header;
