@@ -9,6 +9,73 @@ use crate::pml::status_name;
 
 const MIB: f64 = 1024.0 * 1024.0;
 
+/// JSON Schema of [`to_json`] output, declared as the tool's `outputSchema`.
+pub fn output_schema() -> Value {
+    let int = json!({"type": "integer", "minimum": 0});
+    let num = json!({"type": "number"});
+    let str_ = json!({"type": "string"});
+    let object = |props: Value, required: &[&str]| {
+        json!({"type": "object", "properties": props, "required": required,
+               "additionalProperties": false})
+    };
+    let section = |item: Value, description: &str| {
+        let mut s = object(
+            json!({
+                "distinct": {"type": "integer", "minimum": 0,
+                             "description": "Number of entries before truncation to top_n"},
+                "top": {"type": "array", "items": item},
+            }),
+            &["distinct", "top"],
+        );
+        s["description"] = json!(description);
+        s
+    };
+    object(
+        json!({
+            "total_events": int,
+            "duration_secs": num,
+            "events_per_sec": num,
+            "top_n": int,
+            "by_process": section(object(json!({
+                "name": str_,
+                "pid": {"type": ["integer", "null"], "minimum": 0},
+                "count": int,
+            }), &["name", "pid", "count"]), "Event counts per process"),
+            "by_operation": section(object(json!({
+                "operation": str_, "count": int,
+            }), &["operation", "count"]), "Event counts per operation"),
+            "by_operation_path": section(object(json!({
+                "operation": str_, "path": str_, "count": int,
+                "bytes": {"type": "integer", "minimum": 0,
+                          "description": "Bytes read or written (ReadFile/WriteFile only)"},
+                "mib": num, "mib_per_sec": num,
+            }), &["operation", "path", "count"]), "Event counts per operation and path"),
+            "periodic_opens": section(object(json!({
+                "process": str_, "path": str_, "count": int,
+                "mean_interval_ms": num, "min_interval_ms": num, "max_interval_ms": num,
+            }), &["process", "path", "count", "mean_interval_ms", "min_interval_ms",
+                  "max_interval_ms"]), "Files opened by CreateFile 5 or more times by one process"),
+            "failures": section(object(json!({
+                "operation": str_, "path": str_, "count": int,
+                "status": {"type": "string", "description": "NTSTATUS name, e.g. NAME NOT FOUND"},
+                "code": {"type": "string", "description": "NTSTATUS in hex, e.g. 0xC0000034"},
+            }), &["operation", "path", "count", "status", "code"]),
+               "Operations that returned an error NTSTATUS (END OF FILE excluded)"),
+        }),
+        &[
+            "total_events",
+            "duration_secs",
+            "events_per_sec",
+            "top_n",
+            "by_process",
+            "by_operation",
+            "by_operation_path",
+            "periodic_opens",
+            "failures",
+        ],
+    )
+}
+
 /// The structured form of a summary, returned as MCP `structuredContent`.
 ///
 /// Each section keeps its number of distinct entries next to the top `top_n`, so a reader
@@ -281,5 +348,127 @@ Events: 30 / Duration: 2.0 s / 15 events/s
         let json = to_json(&sample(), 1);
         assert_eq!(json["by_operation"]["distinct"], 2);
         assert_eq!(json["by_operation"]["top"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    /// Checks the subset of JSON Schema that `output_schema` uses.
+    fn conforms(value: &Value, schema: &Value, at: &str) -> Result<(), String> {
+        let types: Vec<&str> = match &schema["type"] {
+            Value::String(t) => vec![t.as_str()],
+            Value::Array(ts) => ts.iter().filter_map(Value::as_str).collect(),
+            _ => return Err(format!("{at}: schema without type")),
+        };
+        let type_ok = types.iter().any(|t| match *t {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "integer" => value.is_u64() || value.is_i64(),
+            "number" => value.is_number(),
+            "null" => value.is_null(),
+            _ => false,
+        });
+        if !type_ok {
+            return Err(format!("{at}: {value} is not {types:?}"));
+        }
+        if let Value::Object(map) = value {
+            let props = schema["properties"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            for req in schema["required"].as_array().into_iter().flatten() {
+                let req = req.as_str().unwrap();
+                if !map.contains_key(req) {
+                    return Err(format!("{at}: missing {req}"));
+                }
+            }
+            for (k, v) in map {
+                match props.get(k) {
+                    Some(s) => conforms(v, s, &format!("{at}.{k}"))?,
+                    None if schema["additionalProperties"] == false => {
+                        return Err(format!("{at}: unexpected {k}"));
+                    }
+                    None => {}
+                }
+            }
+        }
+        if let Value::Array(items) = value {
+            for (i, item) in items.iter().enumerate() {
+                conforms(item, &schema["items"], &format!("{at}[{i}]"))?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn validator_rejects_unexpected_and_missing_fields() {
+        let schema = json!({"type": "object", "properties": {"a": {"type": "integer"}},
+                            "required": ["a"], "additionalProperties": false});
+        assert!(conforms(&json!({"a": 1}), &schema, "$").is_ok());
+        assert!(conforms(&json!({}), &schema, "$").is_err());
+        assert!(conforms(&json!({"a": 1, "b": 2}), &schema, "$").is_err());
+        assert!(conforms(&json!({"a": "x"}), &schema, "$").is_err());
+    }
+
+    fn sample_with_everything() -> Summary {
+        use crate::analysis::{Failure, OperationPath, PeriodicOpen, ProcessCount};
+        Summary {
+            total: 2,
+            first_timestamp: Some(0),
+            last_timestamp: Some(1),
+            by_process: vec![
+                ProcessCount {
+                    name: "a.exe".into(),
+                    pid: Some(1),
+                    count: 1,
+                },
+                ProcessCount {
+                    name: "<unknown process>".into(),
+                    pid: None,
+                    count: 1,
+                },
+            ],
+            by_operation: vec![("ReadFile".into(), 2)],
+            by_operation_path: vec![
+                OperationPath {
+                    operation: "ReadFile".into(),
+                    path: "p".into(),
+                    count: 1,
+                    bytes: Some(1),
+                },
+                OperationPath {
+                    operation: "CreateFile".into(),
+                    path: "p".into(),
+                    count: 1,
+                    bytes: None,
+                },
+            ],
+            periodic_opens: vec![PeriodicOpen {
+                process: "a.exe".into(),
+                path: "p".into(),
+                count: 5,
+                mean_ms: 1.0,
+                min_ms: 1.0,
+                max_ms: 1.0,
+            }],
+            failures: vec![Failure {
+                operation: "CreateFile".into(),
+                path: "p".into(),
+                result: 0xC000_0034,
+                count: 1,
+            }],
+        }
+    }
+
+    #[test]
+    fn json_output_conforms_to_the_declared_schema() {
+        let schema = output_schema();
+        for summary in [sample_with_everything(), Summary::default()] {
+            let json = to_json(&summary, 15);
+            assert_eq!(conforms(&json, &schema, "$"), Ok(()), "{json}");
+        }
     }
 }
