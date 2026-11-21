@@ -7,9 +7,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{
-    ERROR_CANCELLED, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    ERROR_CANCELLED, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+    WAIT_OBJECT_0,
 };
+use windows::Win32::Foundation::{GlobalFree, HWND};
+use windows::Win32::Globalization::GetUserDefaultUILanguage;
 use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND};
+use windows::Win32::System::Com::{
+    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx,
+};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
@@ -18,7 +28,11 @@ use windows::Win32::System::Threading::{
     GetExitCodeProcess, GetProcessId, INFINITE, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     PROCESS_SYNCHRONIZE, WaitForSingleObject,
 };
-use windows::core::HSTRING;
+use windows::Win32::UI::Shell::{
+    SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+};
+use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW, SW_HIDE};
+use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::protocol::PipeId;
 
@@ -78,7 +92,10 @@ impl PipeServer {
         // SAFETY: the pipe handle is owned by `self`.
         match unsafe { ConnectNamedPipe(handle(&self.handle), None) } {
             Ok(()) => {}
-            Err(e) if e.code() == ERROR_PIPE_CONNECTED.to_hresult() => {}
+            // Connected before we waited; NO_DATA: and already closed, its lines still buffered.
+            Err(e)
+                if e.code() == ERROR_PIPE_CONNECTED.to_hresult()
+                    || e.code() == ERROR_NO_DATA.to_hresult() => {}
             Err(e) => return Err(e.into()),
         }
         let mut client = 0u32;
@@ -132,6 +149,88 @@ pub enum LaunchError {
     /// The UAC prompt was declined.
     Declined,
     Other(io::Error),
+}
+
+/// Starts this executable elevated with `args`, through the UAC prompt, owned by `parent`.
+/// Arguments must not contain spaces or quotes; the worker's never do.
+pub fn launch_elevated(parent: isize, args: &[String]) -> Result<OwnedHandle, LaunchError> {
+    debug_assert!(args.iter().all(|a| !a.contains([' ', '"'])));
+    let exe = std::env::current_exe().map_err(LaunchError::Other)?;
+    let file = HSTRING::from(exe.as_os_str());
+    let params = HSTRING::from(args.join(" "));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+        hwnd: HWND(parent as *mut _),
+        lpVerb: w!("runas"),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    // SAFETY: COM is initialized for the shell on this thread, as ShellExecuteEx asks;
+    // the strings outlive the call, and the returned process handle is owned below.
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        match ShellExecuteExW(&mut info) {
+            Ok(()) if !info.hProcess.is_invalid() => {
+                Ok(OwnedHandle::from_raw_handle(info.hProcess.0))
+            }
+            Ok(()) => Err(LaunchError::Other(io::Error::other(
+                "no process was started",
+            ))),
+            Err(e) if e.code() == ERROR_CANCELLED.to_hresult() => Err(LaunchError::Declined),
+            Err(e) => Err(LaunchError::Other(e.into())),
+        }
+    }
+}
+
+/// The user's Windows display language.
+pub fn ui_lang_id() -> u16 {
+    // SAFETY: plain call without arguments.
+    unsafe { GetUserDefaultUILanguage() }
+}
+
+/// Puts `text` on the clipboard.
+pub fn copy_to_clipboard(text: &str) -> io::Result<()> {
+    const CF_UNICODETEXT: u32 = 13;
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: the clipboard owns the memory once SetClipboardData succeeds; until then it
+    // is freed here. The copy stays within the allocation of `wide.len()` units.
+    unsafe {
+        OpenClipboard(None)?;
+        let result = (|| {
+            EmptyClipboard()?;
+            let mem = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2)?;
+            let dest = GlobalLock(mem).cast::<u16>();
+            if dest.is_null() {
+                let _ = GlobalFree(Some(mem));
+                return Err(windows::core::Error::from_thread());
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), dest, wide.len());
+            let _ = GlobalUnlock(mem);
+            if let Err(e) = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(mem.0))) {
+                let _ = GlobalFree(Some(mem));
+                return Err(e);
+            }
+            Ok(())
+        })();
+        let _ = CloseClipboard();
+        result.map_err(io::Error::from)
+    }
+}
+
+/// A plain message box, for when WinUI itself cannot start.
+pub fn message_box(title: &str, text: &str) {
+    // SAFETY: plain call with NUL-terminated strings.
+    unsafe {
+        MessageBoxW(
+            None,
+            &HSTRING::from(text),
+            &HSTRING::from(title),
+            MB_OK | MB_ICONERROR,
+        );
+    }
 }
 
 #[cfg(test)]

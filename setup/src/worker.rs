@@ -2,9 +2,57 @@
 
 use std::io::Write;
 
-use procmon_mcp::install::Step;
+use procmon_mcp::install::{self, Installer, Programs, Step};
 
-use crate::protocol::Event;
+use crate::protocol::{Event, PipeId, Task};
+
+/// The procmon-mcp.exe this setup installs, embedded at build time (see build.rs).
+const SERVER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/procmon-mcp.exe"));
+
+/// Runs `task` elevated and reports to the window's pipe. Returns the exit code:
+/// 0 done, 1 failed (reported), 2 the window could not be reached (nothing done).
+pub fn run(task: Task, id: &PipeId) -> i32 {
+    let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).open(id.path()) else {
+        return 2;
+    };
+    let mut failed = false;
+    let result = match task {
+        Task::Install => match Installer::prepare() {
+            Ok(installer) => report_steps(
+                &Step::ALL,
+                |step| {
+                    let result = installer
+                        .run(step, &Programs::Setup { server: SERVER })
+                        .map(|_| ());
+                    failed |= result.is_err();
+                    result
+                },
+                &mut pipe,
+            ),
+            Err(message) => {
+                failed = true;
+                send(&mut pipe, Event::Failed(message))
+            }
+        },
+        Task::Uninstall => match install::remove_installation() {
+            Ok(report) => {
+                if report.in_use > 0 {
+                    let _ = send(&mut pipe, Event::InUse(report.in_use));
+                }
+                send(&mut pipe, Event::Finished)
+            }
+            Err(message) => {
+                failed = true;
+                send(&mut pipe, Event::Failed(message))
+            }
+        },
+    };
+    match (result, failed) {
+        (Err(_), _) => 2,
+        (Ok(()), true) => 1,
+        (Ok(()), false) => 0,
+    }
+}
 
 /// Runs `steps` in order through `run`, reporting each finished step, then success or the
 /// first error. Stops at the first error.

@@ -163,6 +163,15 @@ text_table! {
         "Remove the \"procmon\" entry from Claude Desktop's claude_desktop_config.json as well.",
         "Claude Desktop の claude_desktop_config.json から \"procmon\" の項目も削除してください。";
     uninstall_failed_heading: "Uninstall could not finish", "アンインストールを完了できませんでした";
+    in_use_note:
+        "Some files were in use and will be deleted when Windows restarts.",
+        "使用中のファイルがあったため、一部は Windows の再起動時に削除されます。";
+    runtime_missing:
+        "procmon-mcp Setup needs the Windows App Runtime 2.x. Install it from Microsoft \
+         (learn.microsoft.com/windows/apps/windows-app-sdk/downloads) and run Setup again.",
+        "procmon-mcp のセットアップには Windows App Runtime 2.x が必要です。Microsoft から\
+         インストールして（learn.microsoft.com/windows/apps/windows-app-sdk/downloads）、\
+         もう一度実行してください。";
 }
 
 impl Lang {

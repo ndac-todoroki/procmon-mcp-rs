@@ -40,6 +40,8 @@ pub struct PipeId(String);
 pub enum Event {
     /// Install step `n` (0-based) finished.
     StepDone(usize),
+    /// Uninstall moved this many files in use aside, to be deleted at restart.
+    InUse(usize),
     /// Everything succeeded.
     Finished,
     /// The work stopped with this error.
@@ -100,6 +102,7 @@ impl Event {
     pub fn to_line(&self) -> String {
         match self {
             Event::StepDone(n) => format!("step {n}\n"),
+            Event::InUse(n) => format!("in-use {n}\n"),
             Event::Finished => "finished\n".to_owned(),
             Event::Failed(message) => {
                 let flat: Vec<&str> = message.split_whitespace().collect();
@@ -114,6 +117,9 @@ impl Event {
         }
         if let Some(n) = line.strip_prefix("step ") {
             return n.parse().ok().map(Event::StepDone);
+        }
+        if let Some(n) = line.strip_prefix("in-use ") {
+            return n.parse().ok().map(Event::InUse);
         }
         line.strip_prefix("failed ")
             .map(|message| Event::Failed(message.to_owned()))
@@ -219,6 +225,7 @@ mod tests {
         for event in [
             Event::StepDone(0),
             Event::StepDone(3),
+            Event::InUse(2),
             Event::Finished,
             Event::Failed("cannot replace procmon-mcp.exe".into()),
         ] {
