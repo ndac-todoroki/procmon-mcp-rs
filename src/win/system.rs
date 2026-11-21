@@ -1,158 +1,109 @@
-//! Process elevation and system folder locations.
+//! Process elevation, the current user, randomness and system folder locations.
 //!
 //! Folders come from the system, never from environment variables: the elevated runner
 //! inherits the user's environment, and a redefined `%ProgramData%` would point it at a
 //! user-writable directory.
 
-use std::ffi::OsString;
 use std::io;
-use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
-use std::ptr::null_mut;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
-use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-use windows_sys::Win32::Security::Cryptography::{
-    BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
-};
-use windows_sys::Win32::Security::{
+use windows::Win32::Foundation::{HANDLE, HLOCAL};
+use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
+use windows::Win32::Security::{
     GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
 };
-use windows_sys::Win32::System::Com::CoTaskMemFree;
-use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramData, SHGetKnownFolderPath};
+use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::UI::Shell::{FOLDERID_ProgramData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+use windows::core::{Owned, PWSTR};
 
 /// Whether this process runs with an elevated (administrator) token.
 pub fn is_elevated() -> io::Result<bool> {
-    let token = ProcessToken::open()?;
-    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let token = process_token()?;
+    let mut elevation = TOKEN_ELEVATION::default();
     let mut returned = 0u32;
     // SAFETY: the buffer is a TOKEN_ELEVATION of the size passed.
-    let ok = unsafe {
+    unsafe {
         GetTokenInformation(
-            token.0,
+            *token,
             TokenElevation,
-            (&raw mut elevation).cast(),
+            Some((&raw mut elevation).cast()),
             size_of::<TOKEN_ELEVATION>() as u32,
             &mut returned,
         )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
+    }?;
     Ok(elevation.TokenIsElevated != 0)
 }
 
 /// The SID of the user this process runs as, e.g. `S-1-5-21-…-1001`.
 pub fn current_user_sid() -> io::Result<String> {
-    let token = ProcessToken::open()?;
+    let token = process_token()?;
     // TOKEN_USER is followed by the variable-length SID it points to; 256 bytes is
     // far beyond the largest SID (68 bytes).
     let mut buf = [0u64; 32];
     let mut returned = 0u32;
     // SAFETY: the buffer is 8-byte aligned, as TOKEN_USER requires, and its size is passed.
-    let ok = unsafe {
+    unsafe {
         GetTokenInformation(
-            token.0,
+            *token,
             TokenUser,
-            buf.as_mut_ptr().cast(),
+            Some(buf.as_mut_ptr().cast()),
             size_of_val(&buf) as u32,
             &mut returned,
         )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
+    }?;
     let user = buf.as_ptr().cast::<TOKEN_USER>();
-    let mut text = null_mut();
-    // SAFETY: the SID pointer refers into `buf`, alive for the call; `text` is
-    // LocalFree'd below.
-    if unsafe { ConvertSidToStringSidW((*user).User.Sid, &mut text) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: a successful conversion returns a NUL-terminated wide string.
-    let sid = unsafe { wide_c_str_to_path(text) };
-    // SAFETY: allocated by ConvertSidToStringSidW.
-    unsafe { LocalFree(text.cast()) };
-    Ok(sid.to_string_lossy().into_owned())
-}
-
-/// This process's access token, opened for querying and closed on drop.
-struct ProcessToken(HANDLE);
-
-impl ProcessToken {
-    fn open() -> io::Result<Self> {
-        let mut token: HANDLE = null_mut();
-        // SAFETY: the pseudo handle from GetCurrentProcess needs no closing.
-        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(ProcessToken(token))
-    }
-}
-
-impl Drop for ProcessToken {
-    fn drop(&mut self) {
-        // SAFETY: opened by OpenProcessToken and closed exactly once.
-        unsafe { CloseHandle(self.0) };
-    }
+    let mut text = PWSTR::null();
+    // SAFETY: the SID pointer refers into `buf`, alive for the call.
+    unsafe { ConvertSidToStringSidW((*user).User.Sid, &mut text) }?;
+    // SAFETY: a successful conversion returns a NUL-terminated string allocated with
+    // LocalAlloc, which we take over and free after copying.
+    let sid = unsafe {
+        let _free = Owned::new(HLOCAL(text.0.cast()));
+        text.to_string()
+    };
+    sid.map_err(io::Error::other)
 }
 
 /// Fills `buf` from the system's preferred random number generator.
 pub fn random_bytes(buf: &mut [u8]) -> io::Result<()> {
-    // SAFETY: the buffer and its length are passed together.
-    let status = unsafe {
-        BCryptGenRandom(
-            null_mut(),
-            buf.as_mut_ptr(),
-            buf.len() as u32,
-            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-        )
-    };
-    if status < 0 {
-        return Err(io::Error::other(format!("BCryptGenRandom 0x{status:08X}")));
-    }
+    // SAFETY: the slice carries its own length.
+    unsafe { BCryptGenRandom(None, buf, BCRYPT_USE_SYSTEM_PREFERRED_RNG) }.ok()?;
     Ok(())
 }
 
 /// `C:\ProgramData` as configured on this system.
 pub fn program_data_dir() -> io::Result<PathBuf> {
-    let mut path = null_mut();
-    // SAFETY: on success the shell allocates `path`, which we free with CoTaskMemFree.
-    let hr = unsafe { SHGetKnownFolderPath(&FOLDERID_ProgramData, 0, null_mut(), &mut path) };
-    let result = if hr < 0 {
-        Err(io::Error::from_raw_os_error(hr))
-    } else {
-        // SAFETY: a successful call returns a NUL-terminated wide string.
-        Ok(unsafe { wide_c_str_to_path(path) })
-    };
-    // SAFETY: freeing NULL is allowed, and the shell expects this even on failure.
-    unsafe { CoTaskMemFree(path.cast()) };
-    result
+    // SAFETY: on success the shell allocates the string, which we free after copying.
+    unsafe {
+        let path = SHGetKnownFolderPath(&FOLDERID_ProgramData, KF_FLAG_DEFAULT, None)?;
+        let copied = path.to_string();
+        CoTaskMemFree(Some(path.0.cast()));
+        Ok(PathBuf::from(copied.map_err(io::Error::other)?))
+    }
 }
 
 /// `C:\Windows\System32` as configured on this system.
 pub fn system_dir() -> io::Result<PathBuf> {
     let mut buf = [0u16; 260];
-    // SAFETY: the buffer length is passed alongside the buffer.
-    let len = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    // SAFETY: the slice carries its own length.
+    let len = unsafe { GetSystemDirectoryW(Some(&mut buf)) } as usize;
     if len == 0 || len >= buf.len() {
         return Err(io::Error::last_os_error());
     }
-    Ok(PathBuf::from(OsString::from_wide(&buf[..len])))
+    Ok(PathBuf::from(String::from_utf16_lossy(&buf[..len])))
 }
 
-/// # Safety
-/// `p` must point to a NUL-terminated UTF-16 string.
-unsafe fn wide_c_str_to_path(p: *const u16) -> PathBuf {
-    let mut len = 0;
-    // SAFETY: guaranteed by the caller.
+/// This process's access token, opened for querying and closed on drop.
+fn process_token() -> io::Result<Owned<HANDLE>> {
+    let mut token = HANDLE::default();
+    // SAFETY: the pseudo handle from GetCurrentProcess needs no closing; the opened token
+    // is owned by the returned value.
     unsafe {
-        while *p.add(len) != 0 {
-            len += 1;
-        }
-        PathBuf::from(OsString::from_wide(std::slice::from_raw_parts(p, len)))
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
+        Ok(Owned::new(token))
     }
 }
 
