@@ -106,6 +106,12 @@ Claude Desktop ──stdio──> procmon-mcp.exe（通常権限、MCP サーバ
 
 `Logfile_default_nofilter.PML` に、Rust で実装した既定テンプレートのフィルターを適用した結果が、`Logfile_default_filter.PML` のイベントと一致することを確認する。
 
+結果（`tests/filter_reference.rs`）:
+
+- Profiling 以外のイベントは、順番も含めて完全に一致した（373,458件）。
+- Procmon は「Events displayed using current filter」で保存するとき、除外ルールがあっても `Process Profiling` を**すべて**残す（9,057件。Procmon64.exe や System の分も含む）。
+- 集計では Profiling を除外しているので、結果には影響しない。`DestructiveFilter=1` で取得したログにも Profiling が残るかは、フェーズ4で確認する。
+
 ## 集計の内容（Python 版 `analysis.py` と同じ）
 
 - イベント数、期間、1秒あたりの件数
