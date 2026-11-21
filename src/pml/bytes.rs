@@ -26,4 +26,16 @@ impl<'a> ByteReader<'a> {
     pub(crate) fn u32(&mut self) -> Result<u32, PmlError> {
         Ok(u32::from_le_bytes(self.array()?))
     }
+
+    pub(crate) fn u64(&mut self) -> Result<u64, PmlError> {
+        Ok(u64::from_le_bytes(self.array()?))
+    }
+
+    pub(crate) fn seek(&mut self, pos: usize) -> Result<(), PmlError> {
+        if pos > self.buf.len() {
+            return Err(PmlError::Truncated);
+        }
+        self.pos = pos;
+        Ok(())
+    }
 }

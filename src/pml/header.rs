@@ -3,7 +3,15 @@ use super::bytes::ByteReader;
 
 /// The fixed-size header at the start of a PML file.
 #[derive(Debug, Clone)]
-pub struct Header {}
+pub struct Header {
+    /// Bitness of the captured system. Pointer-sized fields everywhere follow this,
+    /// not the bitness of the individual process.
+    pub is_64bit: bool,
+    pub number_of_events: u32,
+    pub events_offsets_array_offset: u64,
+    pub process_table_offset: u64,
+    pub strings_table_offset: u64,
+}
 
 impl Header {
     /// Size of the header in version 9.
@@ -21,7 +29,20 @@ impl Header {
         if bytes.len() < Self::SIZE {
             return Err(PmlError::Truncated);
         }
-        Ok(Header {})
+        let is_64bit = r.u32()? != 0;
+        r.seek(0x234)?;
+        let number_of_events = r.u32()?;
+        r.seek(0x248)?;
+        let events_offsets_array_offset = r.u64()?;
+        let process_table_offset = r.u64()?;
+        let strings_table_offset = r.u64()?;
+        Ok(Header {
+            is_64bit,
+            number_of_events,
+            events_offsets_array_offset,
+            process_table_offset,
+            strings_table_offset,
+        })
     }
 }
 
