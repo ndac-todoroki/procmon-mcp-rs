@@ -1,20 +1,16 @@
 //! Authenticode verification of the Process Monitor executable.
 
 use std::fmt;
-use std::mem::zeroed;
-use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
-use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::Security::Cryptography::{
-    CERT_NAME_SIMPLE_DISPLAY_TYPE, CertGetNameStringW,
-};
-use windows_sys::Win32::Security::WinTrust::{
+use windows::Win32::Foundation::{HANDLE, HWND, INVALID_HANDLE_VALUE};
+use windows::Win32::Security::Cryptography::{CERT_NAME_SIMPLE_DISPLAY_TYPE, CertGetNameStringW};
+use windows::Win32::Security::WinTrust::{
     WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO,
     WTD_CHOICE_FILE, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
     WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust,
 };
+use windows::core::{HSTRING, PCWSTR};
 
 /// Why a file failed signature verification.
 #[derive(Debug, PartialEq, Eq)]
@@ -52,12 +48,11 @@ const MICROSOFT: &str = "Microsoft Corporation";
 /// Revocation is not checked: the elevated runner may be offline, and the chain to a
 /// trusted root plus the signer name already rule out a substituted binary.
 pub fn verify_microsoft_signature(path: &Path) -> Result<(), SignatureError> {
-    let wide_path = to_wide(path);
+    let wide_path = HSTRING::from(path.as_os_str());
     let mut file = WINTRUST_FILE_INFO {
         cbStruct: size_of::<WINTRUST_FILE_INFO>() as u32,
-        pcwszFilePath: wide_path.as_ptr(),
-        hFile: null_mut(),
-        pgKnownSubject: null_mut(),
+        pcwszFilePath: PCWSTR(wide_path.as_ptr()),
+        ..Default::default()
     };
     let mut data = WINTRUST_DATA {
         cbStruct: size_of::<WINTRUST_DATA>() as u32,
@@ -66,18 +61,13 @@ pub fn verify_microsoft_signature(path: &Path) -> Result<(), SignatureError> {
         dwUnionChoice: WTD_CHOICE_FILE,
         Anonymous: WINTRUST_DATA_0 { pFile: &mut file },
         dwStateAction: WTD_STATEACTION_VERIFY,
-        ..unsafe { zeroed() }
+        ..Default::default()
     };
     let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    // SAFETY: `data` and `file` are fully initialized and outlive both calls; the
-    // verification state is released by the CLOSE call below on every path.
-    let status = unsafe {
-        WinVerifyTrust(
-            INVALID_HANDLE_VALUE as _,
-            &mut action,
-            (&raw mut data).cast(),
-        )
-    };
+    let no_ui = HWND(INVALID_HANDLE_VALUE.0);
+    // SAFETY: `data` and `file` (and the path string they point to) outlive both calls;
+    // the verification state is released by the CLOSE call below on every path.
+    let status = unsafe { WinVerifyTrust(no_ui, &mut action, (&raw mut data).cast()) };
     let signer = if status == 0 {
         // SAFETY: after a successful VERIFY, hWVTStateData holds provider data that stays
         // valid until the CLOSE call.
@@ -87,13 +77,7 @@ pub fn verify_microsoft_signature(path: &Path) -> Result<(), SignatureError> {
     };
     data.dwStateAction = WTD_STATEACTION_CLOSE;
     // SAFETY: closes the state opened by the VERIFY call with the same structures.
-    unsafe {
-        WinVerifyTrust(
-            INVALID_HANDLE_VALUE as _,
-            &mut action,
-            (&raw mut data).cast(),
-        )
-    };
+    unsafe { WinVerifyTrust(no_ui, &mut action, (&raw mut data).cast()) };
 
     if status != 0 {
         return Err(SignatureError::NotTrusted { code: status });
@@ -116,7 +100,7 @@ unsafe fn leaf_signer_name(state: HANDLE) -> Option<String> {
         if provider.is_null() {
             return None;
         }
-        let signer = WTHelperGetProvSignerFromChain(provider, 0, 0, 0);
+        let signer = WTHelperGetProvSignerFromChain(provider, 0, false, 0);
         if signer.is_null() || (*signer).csCertChain == 0 || (*signer).pasCertChain.is_null() {
             return None;
         }
@@ -125,21 +109,10 @@ unsafe fn leaf_signer_name(state: HANDLE) -> Option<String> {
             return None;
         }
         let mut buf = [0u16; 256];
-        let len = CertGetNameStringW(
-            cert,
-            CERT_NAME_SIMPLE_DISPLAY_TYPE,
-            0,
-            null(),
-            buf.as_mut_ptr(),
-            buf.len() as u32,
-        );
+        let len = CertGetNameStringW(cert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, Some(&mut buf));
         // The returned length includes the terminating NUL; 1 means an empty name.
         (len > 1).then(|| String::from_utf16_lossy(&buf[..len as usize - 1]))
     }
-}
-
-fn to_wide(path: &Path) -> Vec<u16> {
-    path.as_os_str().encode_wide().chain(Some(0)).collect()
 }
 
 #[cfg(test)]

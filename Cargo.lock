@@ -93,7 +93,6 @@ dependencies = [
  "nyquest-backend-winhttp",
  "serde_json",
  "windows",
- "windows-sys",
 ]
 
 [[package]]
