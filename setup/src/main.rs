@@ -3,6 +3,7 @@
 
 mod protocol;
 mod text;
+mod win;
 mod wizard;
 
 fn main() {}
