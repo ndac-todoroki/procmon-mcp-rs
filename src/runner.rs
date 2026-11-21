@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use crate::job::{CaptureRequest, JobStatus};
 use crate::layout::{self, Layout};
 use crate::pmc::{capture_configuration, set_dbghelp_path};
-use crate::win;
+use crate::win::{self, Hive};
 
 pub const CAPTURE_FILE: &str = "capture.pml";
 pub const CONFIG_FILE: &str = "filter.pmc";
@@ -132,10 +132,10 @@ fn capture(layout: &Layout, request: &CaptureRequest, job_dir: &Path) -> Result<
 
     // Procmon saves the configuration it ran with into the user's GUI settings on exit;
     // put the user's own settings back whatever happens to the capture.
-    let settings = win::snapshot_hkcu(PROCMON_SETTINGS_KEY)
+    let settings = win::snapshot_key(Hive::CurrentUser, PROCMON_SETTINGS_KEY)
         .map_err(|e| format!("cannot save the Process Monitor settings: {e}"))?;
     let outcome = run_procmon(layout, request, job_dir);
-    let restored = win::restore_hkcu(PROCMON_SETTINGS_KEY, &settings)
+    let restored = win::restore_key(Hive::CurrentUser, PROCMON_SETTINGS_KEY, &settings)
         .map_err(|e| format!("cannot restore the Process Monitor settings: {e}"));
     outcome.and(restored)
 }

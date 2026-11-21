@@ -1,17 +1,17 @@
-//! Saving and restoring the values of an HKCU key.
+//! Saving and restoring the values of a registry key.
 //!
 //! Process Monitor writes the configuration it was started with back to
 //! `HKCU\Software\Sysinternals\Process Monitor` when it exits, which would replace the
 //! user's own GUI settings with the capture's filter. The runner saves the key first and
-//! puts it back afterwards.
+//! puts it back afterwards. Install writes its "Installed apps" entry under HKLM the same way.
 
 use std::io;
 
 use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE,
-    REG_VALUE_TYPE, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegEnumValueW, RegOpenKeyExW,
-    RegQueryInfoKeyW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE,
+    REG_OPTION_NON_VOLATILE, REG_VALUE_TYPE, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW,
+    RegEnumValueW, RegOpenKeyExW, RegQueryInfoKeyW, RegSetValueExW,
 };
 use windows::core::{HSTRING, Owned, PCWSTR, PWSTR};
 
@@ -30,13 +30,29 @@ pub struct KeySnapshot {
     pub values: Option<Vec<RegValue>>,
 }
 
-/// Reads all values of `HKCU\<subkey>`.
-pub fn snapshot_hkcu(subkey: &str) -> io::Result<KeySnapshot> {
+/// The registry root a key lives under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hive {
+    CurrentUser,
+    LocalMachine,
+}
+
+impl Hive {
+    fn root(self) -> HKEY {
+        match self {
+            Hive::CurrentUser => HKEY_CURRENT_USER,
+            Hive::LocalMachine => HKEY_LOCAL_MACHINE,
+        }
+    }
+}
+
+/// Reads all values of `<hive>\<subkey>`.
+pub fn snapshot_key(hive: Hive, subkey: &str) -> io::Result<KeySnapshot> {
     let mut key = HKEY::default();
     // SAFETY: on success the opened key is owned and closed on drop.
     let status = unsafe {
         RegOpenKeyExW(
-            HKEY_CURRENT_USER,
+            hive.root(),
             &HSTRING::from(subkey),
             None,
             KEY_QUERY_VALUE,
@@ -54,13 +70,13 @@ pub fn snapshot_hkcu(subkey: &str) -> io::Result<KeySnapshot> {
     })
 }
 
-/// Makes `HKCU\<subkey>` hold exactly the snapshot's values again: changed values are
+/// Makes `<hive>\<subkey>` hold exactly the snapshot's values: changed values are
 /// rewritten, added ones deleted, removed ones recreated. A key that did not exist is
 /// deleted.
-pub fn restore_hkcu(subkey: &str, snapshot: &KeySnapshot) -> io::Result<()> {
+pub fn restore_key(hive: Hive, subkey: &str, snapshot: &KeySnapshot) -> io::Result<()> {
     let Some(values) = &snapshot.values else {
         // SAFETY: plain call with a NUL-terminated subkey name.
-        let status = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(subkey)) };
+        let status = unsafe { RegDeleteTreeW(hive.root(), &HSTRING::from(subkey)) };
         return if status == ERROR_FILE_NOT_FOUND {
             Ok(())
         } else {
@@ -71,7 +87,7 @@ pub fn restore_hkcu(subkey: &str, snapshot: &KeySnapshot) -> io::Result<()> {
     // SAFETY: on success the key is owned and closed on drop.
     unsafe {
         RegCreateKeyExW(
-            HKEY_CURRENT_USER,
+            hive.root(),
             &HSTRING::from(subkey),
             None,
             PCWSTR::null(),
@@ -256,7 +272,7 @@ mod tests {
         key.set("DestructiveFilter", REG_DWORD, &0u32.to_le_bytes());
         key.set("Logfile", REG_SZ, &sz(""));
         key.set("", REG_SZ, &sz("default value"));
-        let before = snapshot_hkcu(&key.0).unwrap();
+        let before = snapshot_key(Hive::CurrentUser, &key.0).unwrap();
         assert_eq!(before.values.as_ref().unwrap().len(), 4);
 
         // What Procmon does on exit: rewrite, add and (hypothetically) remove values.
@@ -265,25 +281,31 @@ mod tests {
         key.set("NewSetting", REG_DWORD, &7u32.to_le_bytes());
         key.delete_value("Logfile");
 
-        restore_hkcu(&key.0, &before).unwrap();
+        restore_key(Hive::CurrentUser, &key.0, &before).unwrap();
         // Value order carries no meaning; a recreated value comes back last.
-        assert_eq!(sorted(snapshot_hkcu(&key.0).unwrap()), sorted(before));
+        assert_eq!(
+            sorted(snapshot_key(Hive::CurrentUser, &key.0).unwrap()),
+            sorted(before)
+        );
     }
 
     #[test]
     fn deletes_a_key_that_did_not_exist_before() {
         let key = TestKey::new("absent");
-        let before = snapshot_hkcu(&key.0).unwrap();
+        let before = snapshot_key(Hive::CurrentUser, &key.0).unwrap();
         assert_eq!(before.values, None);
         key.set("Created", REG_DWORD, &1u32.to_le_bytes());
-        restore_hkcu(&key.0, &before).unwrap();
-        assert_eq!(snapshot_hkcu(&key.0).unwrap().values, None);
+        restore_key(Hive::CurrentUser, &key.0, &before).unwrap();
+        assert_eq!(
+            snapshot_key(Hive::CurrentUser, &key.0).unwrap().values,
+            None
+        );
     }
 
     #[test]
     fn restoring_an_absent_key_that_is_still_absent_succeeds() {
         let key = TestKey::new("still-absent");
-        let before = snapshot_hkcu(&key.0).unwrap();
-        assert!(restore_hkcu(&key.0, &before).is_ok());
+        let before = snapshot_key(Hive::CurrentUser, &key.0).unwrap();
+        assert!(restore_key(Hive::CurrentUser, &key.0, &before).is_ok());
     }
 }
