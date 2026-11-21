@@ -6,6 +6,8 @@
 
 mod tools;
 
+use std::io::{BufRead, Write};
+
 use serde_json::{Value, json};
 
 /// Revisions served with per-request `_meta`.
@@ -13,6 +15,8 @@ pub const MODERN_VERSIONS: &[&str] = &["2026-07-28"];
 /// Revisions served after an `initialize` handshake, newest first.
 pub const LEGACY_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
+const PARSE_ERROR: i64 = -32700;
+const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
@@ -41,6 +45,40 @@ impl RpcError {
         }
         e
     }
+}
+
+/// Serves newline-delimited JSON-RPC from `input` until it ends.
+pub fn serve(input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
+    let mut server = Server::default();
+    for line in input.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<Value>(&line) {
+            Ok(message @ Value::Object(_)) => server.handle(&message),
+            // Batches were removed from MCP; a bare value is not a message either.
+            Ok(_) => Some(error_response(
+                Value::Null,
+                RpcError::new(INVALID_REQUEST, "expected a single JSON-RPC message object"),
+            )),
+            Err(e) => Some(error_response(
+                Value::Null,
+                RpcError::new(PARSE_ERROR, format!("parse error: {e}")),
+            )),
+        };
+        if let Some(response) = response {
+            // serde_json's compact form never contains a raw newline, as stdio framing requires.
+            serde_json::to_writer(&mut output, &response)?;
+            output.write_all(b"\n")?;
+            output.flush()?;
+        }
+    }
+    Ok(())
+}
+
+fn error_response(id: Value, error: RpcError) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": error.to_json()})
 }
 
 /// Which protocol era a request belongs to.
@@ -341,5 +379,50 @@ mod tests {
                 .unwrap()
                 .contains(".pml")
         );
+    }
+}
+
+#[cfg(test)]
+mod serve_tests {
+    use super::*;
+
+    fn run(input: &str) -> Vec<Value> {
+        let mut out = Vec::new();
+        serve(input.as_bytes(), &mut out).unwrap();
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn answers_each_request_line_with_one_response_line() {
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            "\n\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            "\n",
+        );
+        let responses = run(input);
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], 1);
+        assert_eq!(responses[1]["id"], 2);
+    }
+
+    #[test]
+    fn reports_unparsable_lines_as_parse_errors() {
+        let responses = run("{not json\n");
+        assert_eq!(responses[0]["error"]["code"], -32700);
+        assert_eq!(responses[0]["id"], Value::Null);
+    }
+
+    #[test]
+    fn rejects_batches_and_non_objects_as_invalid_requests() {
+        let responses = run("[]\n42\n");
+        assert_eq!(responses.len(), 2);
+        assert!(responses.iter().all(|r| r["error"]["code"] == -32600));
     }
 }
