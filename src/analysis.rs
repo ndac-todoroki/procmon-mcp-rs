@@ -14,7 +14,7 @@ pub fn summarize_file(path: &Path, filter: Filter) -> Result<Summary, PmlError> 
 }
 
 /// Conditions an event must meet to be counted. String comparisons ignore case.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Filter {
     pub process_name: Option<String>,
     pub pid: Option<u32>,
