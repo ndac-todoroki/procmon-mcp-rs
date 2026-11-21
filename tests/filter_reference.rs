@@ -6,7 +6,7 @@
 //! from profiling events: Procmon saves every one of those regardless of the filter.
 //! Reads about 600 MB of logs, so it takes a while (around 20 s in a debug build).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use procmon_mcp::event_filter::EventSubject;
 use procmon_mcp::pmc::{default_filter_rules, is_included};
@@ -47,7 +47,7 @@ fn reference_pair() -> Option<(PathBuf, PathBuf)> {
 }
 
 /// Keys of the events in `path` that satisfy `keep`, in file order.
-fn keys(path: &PathBuf, mut keep: impl FnMut(&Event, Option<&Process>) -> bool) -> Vec<String> {
+fn keys(path: &Path, mut keep: impl FnMut(&Event, Option<&Process>) -> bool) -> Vec<String> {
     let mut out = Vec::new();
     PmlReader::open(path)
         .unwrap()
