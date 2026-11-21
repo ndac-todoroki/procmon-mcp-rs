@@ -30,6 +30,12 @@ Claude Desktop から「プロセス X を N 秒 Procmon で取得して、何�
 | EULA の同意 | `install` で Sysinternals のライセンスの URL を示し、y/N で尋ねる。`--accept-eula` で省略できる | `/AcceptEula` はユーザーの代わりに同意することになるため |
 | PML パーサー | procmon-parser のドキュメントに基づいて、必要な部分だけを実装する。実ファイルとの突き合わせは最低限にする | 公式の仕様はない。procmon-parser が事実上の参照実装 |
 | インストーラー | `install` / `uninstall` は最初から CLI で作り、GUI は最後のフェーズで作る | GUI は外側だけ。作ったものをすべて記録し、アンインストールできる設計を先に固める |
+| GUI インストーラーの方式 | WinUI 3 を `windows-reactor`（windows-rs の宣言的 UI ライブラリ）で作る。Windows App Runtime 2.x はインストール済みを前提にする（framework-dependent） | TaskDialog や Aero Wizard より現在の Windows の見た目に近く、ライト/ダーク、Mica、アクセシビリティが標準で付く。ランタイムを同梱すると約120個のファイルになり、exe 1つで配れなくなる |
+| `windows-reactor` の版 | 0.101（crates.io 未公開）を git のコミット固定で使う | 0.100 にはフォントを指定する API がなく、パスを等幅で表示できない |
+| GUI の配布形態 | 利用者がダウンロードするのは `procmon-mcp-setup.exe` の1つだけ。本体の `procmon-mcp.exe` を埋め込み、インストール時に `bin\` へ書き出す。セットアップ自身も `bin\` にコピーし、アンインストーラーとして「設定 → アプリ」に登録する（HKLM の Uninstall キー） | 本体（MCP サーバー）に WinUI のランタイム依存を持ち込まないため。インストール後にセットアップを消されてもアンインストールできるようにするため |
+| GUI の昇格 | 画面は通常権限で動かし、[インストール] を押したときに、画面のない作業用プロセスを昇格して起動する。実際の利用者の SID は画面側から渡す | 起動時に昇格すると、別の管理者アカウントの資格情報で昇格した場合に `jobs\` の ACL がそのアカウントに付いてしまうため（CLI の `install` にも同じ問題がある） |
+| GUI の画面構成 | ようこそ → ライセンス → 確認 → インストール → 完了の一本道。戻るはタイトルバー左上（WinUI の TitleBar）、操作ボタンは右下の1つだけ。キャンセルボタンは置かない（閉じるボタンで足りる） | 現在の WinUI の慣習に合わせるため。キャンセルは押し間違えやすいため |
+| GUI の言語 | Windows の表示言語に合わせて切り替える（まずは英語と日本語）。パスや識別子は翻訳せず、常に等幅フォント（Cascadia Mono）で表示する | 日本語環境のプロポーショナルフォントでは `\` が `¥` で表示されるため |
 | ライセンス | MIT | procmon-parser（MIT, Copyright (c) 2020 Ely Ronnen）に合わせる |
 
 ## 構成
@@ -78,7 +84,7 @@ Claude Desktop ──stdio──> procmon-mcp.exe（通常権限、MCP サーバ
 | 2 | MCP 層（自作）と `summarize_log` ツール | JSON の入出力の単体テストと、Claude Desktop からの呼び出し |
 | 3 | PMC の読み書き、既定テンプレート、条件からのルール生成 | `ProcmonConfiguration.pmc` の読み込みと書き戻しでバイト一致。フィルター適用結果の照合（下記） |
 | 4 | `install` / `uninstall` / `update` / `runner`、ダウンロードと署名確認、`capture` ツール | 実機で確認（管理者権限の操作は事前に了承を得る） |
-| 5 | GUI のインストーラー（MSI / Inno Setup / 自作のいずれか）と Claude Desktop への登録（`.mcpb` を含めて検討） | — |
+| 5 | GUI のインストーラー（WinUI 3、決定事項を参照）。Claude Desktop への登録は、完了画面で設定の JSON をコピーするボタンにする | プロトタイプで見た目を確認したうえで実装する |
 
 開発は TDD（t-wada 氏のプラクティス）で進め、commit-as-you-go を守る。
 
