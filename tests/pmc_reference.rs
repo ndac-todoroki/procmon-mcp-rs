@@ -51,6 +51,21 @@ fn default_filter_rules_equal_the_reference_rules_in_order() {
 }
 
 #[test]
+fn empty_capture_filter_reproduces_the_reference_except_destructive_filter() {
+    let Some(bytes) = reference_pmc() else { return };
+    let mut expected = pmc::parse(&bytes).unwrap();
+    for record in &mut expected.records {
+        if record.name == "DestructiveFilter" {
+            record.data = 1u32.to_le_bytes().to_vec();
+        }
+    }
+
+    let config = pmc::capture_configuration(&pmc::CaptureFilter::default()).unwrap();
+
+    assert_eq!(config, expected);
+}
+
+#[test]
 fn reference_file_has_the_24_records_procmon_exports() {
     let Some(bytes) = reference_pmc() else { return };
 
