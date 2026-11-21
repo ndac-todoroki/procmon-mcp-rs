@@ -125,13 +125,21 @@ Claude Desktop ──stdio──> procmon-mcp.exe（通常権限、MCP サーバ
 
 ## 未確認・要検証
 
+### 実機で確認済み（2026-11-21、Procmon 4.13）
+
+- 通常権限の MCP サーバーから COM でタスクを起動すると、UAC なしで昇格して動く。
+- `/LoadConfig` で読み込ませた生成 PMC は効く（`explorer.exe` の Include で `Explorer.EXE` だけが記録された。大文字小文字は区別しない）。
+- `DestructiveFilter=1` で取得したログには Profiling イベントが入らない。
+- **Procmon は終了時に、読み込んだ設定を `HKCU\Software\Sysinternals\Process Monitor` へ書き戻す**（FilterRules、DestructiveFilter、Logfile、ウィンドウ位置など）。→ runner が取得の前に保存し、後で元に戻す。
+- **Procmon が既に起動していると、2つ目のインスタンスは取得できない**（約45秒後に空のログで終了した）。→ MCP サーバーと runner の両方で検出し、「Procmon を閉じてから再実行して」と返す。ユーザーの Procmon は止めない（`/Terminate` は使わない）。
+- 5秒の取得は全体で約12秒かかる（タスクの起動、ドライバーの初期化、ログの書き出し）。
+
+### 未確認
+
 - （解決済み）実際の PMC の既定ルールは24本で、procmon-parser の README の例より1本多い。24本目は「Event Class is IPC → Exclude」。
-- PMC の `DbgHelpPath` が `C:\WINDOWS\...` 固定。`runner` で `%SystemRoot%` から組み立てる。
-- PMC のフォント設定が日本語環境の値（Yu Gothic UI）。HKCU への書き戻しの確認と合わせて扱いを決める。
+- （解決済み）PMC の `DbgHelpPath` は runner が `GetSystemDirectory` から組み立てる。
+- PMC のフォント設定が日本語環境の値（Yu Gothic UI）。HKCU を復元するので GUI への影響はないが、他の言語環境での表示は未確認。
 - ネットワークイベントの Path（ホストとポートのテーブルが必要）は未実装。
-- 生成した PMC だけで（GUI で書き出した他のレコードがなくても）`/LoadConfig` が期待どおり効くか。
-- `/LoadConfig` で読み込んだ設定を、Procmon が終了時に HKCU へ保存し、ユーザーの GUI のフィルターを上書きしないか。
-- 通常権限の MCP サーバーから COM でタスクを起動したとき、UAC なしで昇格して動くか（タスクのセキュリティ記述子でユーザーに実行を許可している）。
-- Procmon の GUI が開いているときの挙動。他のインスタンスを `/Terminate` で止めてよいか。
 - `/OpenLog ... /SaveAs x.csv` が昇格なしで動くか（PML の検証に使う場合）。
 - 他のバージョンの Procmon で作った PML が読めるか。
+- `install` の表示文言を整える（ユーザーからの指摘）。
