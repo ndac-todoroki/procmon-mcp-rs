@@ -87,7 +87,29 @@ pub fn security_sddl(path: &Path) -> io::Result<String> {
     .ok()?;
     // SAFETY: allocated by the call above and freed exactly once.
     let _free = unsafe { Owned::new(HLOCAL(raw.0)) };
+    descriptor_to_sddl(raw)
+}
 
+/// `sddl` as Windows renders it, e.g. with well-known SIDs as aliases (`S-1-5-18` as `SY`,
+/// the built-in Administrator account as `LA`). Compare SDDL only in this form.
+pub fn canonical_sddl(sddl: &str) -> io::Result<String> {
+    let mut raw = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: on success the descriptor is allocated with LocalAlloc; `_free` releases it.
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            &HSTRING::from(sddl),
+            SDDL_REVISION_1,
+            &mut raw,
+            None,
+        )
+    }?;
+    // SAFETY: allocated by the conversion above and freed exactly once.
+    let _free = unsafe { Owned::new(HLOCAL(raw.0)) };
+    descriptor_to_sddl(raw)
+}
+
+/// The owner and DACL of a valid descriptor as an SDDL string.
+fn descriptor_to_sddl(raw: PSECURITY_DESCRIPTOR) -> io::Result<String> {
     let mut text = PWSTR::null();
     // SAFETY: `raw` is a valid descriptor; the returned string is LocalAlloc'd and freed
     // by `_free_text` after it is copied.

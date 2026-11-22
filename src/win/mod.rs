@@ -7,7 +7,7 @@ mod registry;
 mod signature;
 mod system;
 
-pub use acl::{security_sddl, set_security};
+pub use acl::{canonical_sddl, security_sddl, set_security};
 pub use console::enable_ansi_on_stderr;
 pub use process::{find_procmon, running_image_names};
 pub use registry::{Hive, KeySnapshot, RegValue, restore_key, snapshot_key};

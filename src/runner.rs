@@ -174,6 +174,10 @@ fn run_procmon(layout: &Layout, request: &CaptureRequest, job_dir: &Path) -> Res
 pub fn check_security(path: &Path, expected: &str) -> Result<(), String> {
     let actual = crate::win::security_sddl(path)
         .map_err(|e| format!("cannot read the permissions of {}: {e}", path.display()))?;
+    // Rendered by Windows like `actual`, so a user SID that Windows shows as an alias
+    // (the built-in Administrator account as LA) still matches.
+    let expected = crate::win::canonical_sddl(expected)
+        .map_err(|e| format!("cannot parse the expected permissions {expected}: {e}"))?;
     if actual == expected {
         Ok(())
     } else {
@@ -280,5 +284,17 @@ mod tests {
         assert_eq!(check_security(&dir.0, &sddl), Ok(()));
         let looser = format!("O:{me}D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;{me})(A;OICI;FA;;;WD)");
         assert!(check_security(&dir.0, &looser).is_err());
+    }
+
+    /// Windows renders some SIDs as two-letter aliases (SYSTEM as SY, the built-in
+    /// Administrator account as LA), so the same permissions can be written two ways.
+    #[test]
+    fn security_check_accepts_sids_that_windows_renders_as_aliases() {
+        use crate::win::{current_user_sid, set_security};
+        let dir = TempDir::new("alias");
+        let me = current_user_sid().unwrap();
+        let sddl = format!("O:{me}D:PAI(A;OICI;FA;;;S-1-5-18)(A;OICI;FA;;;{me})");
+        set_security(&dir.0, &sddl).unwrap();
+        assert_eq!(check_security(&dir.0, &sddl), Ok(()));
     }
 }
