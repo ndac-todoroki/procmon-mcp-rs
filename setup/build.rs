@@ -14,14 +14,18 @@ fn main() {
 /// Embeds setup.manifest through the MSVC linker, so no resource compiler or extra crate
 /// is needed. /MANIFESTUAC:NO keeps the linker from adding a second trustInfo.
 fn embed_manifest() {
-    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("setup.manifest");
+    let manifest =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("setup.manifest");
     println!("cargo:rerun-if-changed={}", manifest.display());
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
         println!("cargo:warning=not an MSVC target; the setup is built without its manifest");
         return;
     }
     println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
-    println!("cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}", manifest.display());
+    println!(
+        "cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}",
+        manifest.display()
+    );
     println!("cargo:rustc-link-arg-bins=/MANIFESTUAC:NO");
 }
 
