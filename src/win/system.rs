@@ -22,7 +22,9 @@ use windows::Win32::System::RemoteDesktop::{
 };
 use windows::Win32::System::SystemInformation::{GetSystemDirectoryW, GetSystemWindowsDirectoryW};
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-use windows::Win32::UI::Shell::{FOLDERID_ProgramData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+use windows::Win32::UI::Shell::{
+    FOLDERID_ProgramData, FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+};
 use windows::core::{HSTRING, Owned, PCWSTR, PWSTR};
 
 /// Whether this process runs with an elevated (administrator) token.
@@ -135,9 +137,19 @@ pub fn random_bytes(buf: &mut [u8]) -> io::Result<()> {
 
 /// `C:\ProgramData` as configured on this system.
 pub fn program_data_dir() -> io::Result<PathBuf> {
+    known_folder(&FOLDERID_ProgramData)
+}
+
+/// `C:\Program Files` as configured on this system. This is a 64-bit process, so it is
+/// never the `Program Files (x86)` folder.
+pub fn program_files_dir() -> io::Result<PathBuf> {
+    known_folder(&FOLDERID_ProgramFiles)
+}
+
+fn known_folder(id: &windows::core::GUID) -> io::Result<PathBuf> {
     // SAFETY: on success the shell allocates the string, which we free after copying.
     unsafe {
-        let path = SHGetKnownFolderPath(&FOLDERID_ProgramData, KF_FLAG_DEFAULT, None)?;
+        let path = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None)?;
         let copied = path.to_string();
         CoTaskMemFree(Some(path.0.cast()));
         Ok(PathBuf::from(copied.map_err(io::Error::other)?))
@@ -204,6 +216,13 @@ mod tests {
         // In an unmodified environment both sources agree.
         let expected = std::env::var("ProgramData").unwrap();
         let actual = program_data_dir().unwrap();
+        assert!(same_dir(&actual, &expected), "{actual:?} vs {expected}");
+    }
+
+    #[test]
+    fn program_files_matches_the_default_environment() {
+        let expected = std::env::var("ProgramFiles").unwrap();
+        let actual = program_files_dir().unwrap();
         assert!(same_dir(&actual, &expected), "{actual:?} vs {expected}");
     }
 
