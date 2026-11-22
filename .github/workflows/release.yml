@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and release, e.g. v1.0.0
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  release:
+    name: Build the setup and draft a release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      # The release notes come from the tag's message, so fetch the tag object itself.
+      - name: Fetch the annotated tag
+        run: git fetch --force origin "refs/tags/${env:TAG}:refs/tags/${env:TAG}"
+
+      - name: Check the tag matches the crate versions
+        run: |
+          $meta = cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json
+          foreach ($p in $meta.packages) {
+            if ("v$($p.version)" -ne $env:TAG) {
+              throw "$($p.name) is $($p.version), but the tag is $env:TAG"
+            }
+          }
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      # The setup embeds the server binary, so the server must be built first.
+      - name: Build
+        run: |
+          cargo build --release --locked -p procmon-mcp
+          cargo build --release --locked -p procmon-mcp-setup
+
+      - name: Collect the assets
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/procmon-mcp-setup.exe dist/
+          Push-Location dist
+          Get-ChildItem -File | ForEach-Object {
+            "$((Get-FileHash $_.Name -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+          Pop-Location
+
+      # A draft, so a person looks at it before anyone can download it.
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create $env:TAG
+          dist/procmon-mcp-setup.exe dist/SHA256SUMS.txt
+          --draft --verify-tag --notes-from-tag --title "procmon-mcp $($env:TAG.TrimStart('v'))"
