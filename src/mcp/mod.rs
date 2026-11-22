@@ -186,13 +186,15 @@ impl Server {
             "server/discover" => Ok(json!({
                 "supportedVersions": supported_versions(),
                 "capabilities": capabilities(),
+                "instructions": INSTRUCTIONS,
+                "ttlMs": CACHE_TTL_MS,
+                "cacheScope": "public",
             })),
             // Removed in 2026-07-28 but still sent by legacy clients.
             "ping" => Ok(json!({})),
-            // The tool set never changes while the server runs.
             "tools/list" => Ok(json!({
                 "tools": tools::definitions(),
-                "ttlMs": 24 * 60 * 60 * 1000,
+                "ttlMs": CACHE_TTL_MS,
                 "cacheScope": "public",
             })),
             "tools/call" => {
@@ -236,9 +238,32 @@ impl Server {
             "protocolVersion": version,
             "capabilities": capabilities(),
             "serverInfo": server_info(),
+            "instructions": INSTRUCTIONS,
         })
     }
 }
+
+/// How long clients may cache `server/discover` and `tools/list`: neither changes while
+/// the server runs.
+const CACHE_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Guidance for the model on using this server as a whole, returned by `server/discover`
+/// (2026-07-28) and `initialize` (earlier). Clients may add it to the system prompt.
+/// The specification asks not to repeat the tool descriptions, so this covers when to
+/// reach for `capture` and how to run one with the user.
+const INSTRUCTIONS: &str = "\
+procmon-mcp shows what Windows programs actually do, by running Sysinternals Process \
+Monitor for a few seconds. Use it when a question is about a program's real behavior \
+rather than its documentation: which files or registry keys it reads or writes, what \
+keeps the disk busy, or why it fails to find, open or save something.
+
+- Narrow `capture` to the program (process_name or pid) whenever it is known. A \
+system-wide capture grows to hundreds of MB in seconds.
+- Only what happens during the capture is recorded, and recording starts a few seconds \
+after the call. If the behavior needs the user, such as clicking Save or starting the program, \
+tell them what to do and when before calling `capture`, and give them enough seconds.
+- To look at the same events again from another angle, capture with `keep_log` and \
+pass the returned path to `summarize_log` instead of capturing again.";
 
 fn supported_versions() -> Vec<&'static str> {
     MODERN_VERSIONS
@@ -343,6 +368,27 @@ mod tests {
             result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
             "procmon-mcp"
         );
+    }
+
+    #[test]
+    fn discover_may_be_cached_by_any_client() {
+        let response = Server::default()
+            .handle(&modern(1, "server/discover", "2026-07-28"))
+            .unwrap();
+        let result = &response["result"];
+        assert!(result["ttlMs"].is_u64(), "{result}");
+        assert_eq!(result["cacheScope"], "public");
+    }
+
+    #[test]
+    fn both_eras_give_the_same_server_instructions() {
+        let modern = Server::default()
+            .handle(&modern(1, "server/discover", "2026-07-28"))
+            .unwrap();
+        let legacy = Server::default().handle(&initialize("2025-11-25")).unwrap();
+        let instructions = modern["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.contains("capture"), "{instructions}");
+        assert_eq!(legacy["result"]["instructions"], instructions);
     }
 
     #[test]
