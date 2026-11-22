@@ -66,11 +66,12 @@ Sysinternals のライセンスへの同意を経て、**[インストール]** 
 
    `install` は、同意を求める前に、次の内容をすべて表示します。
 
-   - `C:\ProgramData\ProcmonMcp`（`bin`、`jobs`、`out`）を作成します。書き込めるのは管理者だけです。
-     ただし、あなたは `jobs` に依頼を書き込むことと、`out` の結果を読んだり削除したりすることができます。
-   - 自身を `C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe` にコピーします。
+   - プログラム用の `C:\Program Files\procmon-mcp` と、`C:\ProgramData\ProcmonMcp`（`jobs`、`out`）を
+     作成します。書き込めるのは管理者だけです。ただし、あなたは `jobs` に依頼を書き込むことと、
+     `out` の結果を読んだり削除したりすることができます。
+   - 自身を `C:\Program Files\procmon-mcp\procmon-mcp.exe` にコピーします。
    - `https://live.sysinternals.com/Procmon64.exe`（ARM64 では `Procmon64a.exe`）を
-     `C:\ProgramData\ProcmonMcp\bin\` にダウンロードします。Microsoft の署名が有効な場合だけ使います。
+     `C:\Program Files\procmon-mcp\` にダウンロードします。Microsoft の署名が有効な場合だけ使います。
    - タスクスケジューラにタスク `ProcmonMcpCapture` を登録します。依頼があったときに、
      管理者権限で取得を実行します。
 
@@ -85,7 +86,7 @@ Sysinternals のライセンスへの同意を経て、**[インストール]** 
    {
      "mcpServers": {
        "procmon": {
-         "command": "C:\\ProgramData\\ProcmonMcp\\bin\\procmon-mcp.exe",
+         "command": "C:\\Program Files\\procmon-mcp\\procmon-mcp.exe",
          "args": ["mcp"]
        }
      }
@@ -174,7 +175,7 @@ Claude Desktop ──stdio──> procmon-mcp.exe mcp        （通常権限）
 
 セキュリティについて:
 
-- 管理者権限で動く runner が起動するのは、管理者だけが書き込める `bin` にある `Procmon64.exe` だけです。
+- 管理者権限で動く runner が起動するのは、管理者だけが書き込める `C:\Program Files\procmon-mcp` にある `Procmon64.exe` だけです。
   しかも、Microsoft の署名がある場合に限ります。
 - フォルダーの所有者や権限が `install` で設定したものと異なる場合は、実行を拒否します。
 - `jobs` から読むのは小さな依頼ファイル1つだけです。受け付けるのは、16進の ID、1〜120秒の秒数、
@@ -189,10 +190,10 @@ Claude Desktop ──stdio──> procmon-mcp.exe mcp        （通常権限）
 管理者として開いたターミナルで次を実行します。
 
 ```powershell
-C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe uninstall
+& "C:\Program Files\procmon-mcp\procmon-mcp.exe" uninstall
 ```
 
-どちらも、タスク、「インストールされているアプリ」の項目、`C:\ProgramData\ProcmonMcp` を削除します。
+どちらも、タスク、「インストールされているアプリ」の項目、`C:\Program Files\procmon-mcp`、`C:\ProgramData\ProcmonMcp` を削除します。
 先に Claude Desktop を終了してください。実行中のプログラムは別の場所へ移し、Windows の再起動時に削除します。
 Claude Desktop の設定から `procmon` の項目も削除してください。
 

@@ -69,12 +69,12 @@ The setup needs the Windows App Runtime 2.x (see Requirements); the MCP server d
 
    Before asking for consent, `install` lists everything it will do:
 
-   - create `C:\ProgramData\ProcmonMcp` (`bin`, `jobs`, `out`), writable only by
-     administrators, except that you may add requests to `jobs` and read or delete
-     results in `out`
-   - copy itself to `C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe`
+   - create `C:\Program Files\procmon-mcp` for the programs, and
+     `C:\ProgramData\ProcmonMcp` (`jobs`, `out`), writable only by administrators,
+     except that you may add requests to `jobs` and read or delete results in `out`
+   - copy itself to `C:\Program Files\procmon-mcp\procmon-mcp.exe`
    - download `https://live.sysinternals.com/Procmon64.exe` (`Procmon64a.exe` on ARM64)
-     to `C:\ProgramData\ProcmonMcp\bin\`, keeping it only if its Microsoft signature is
+     to `C:\Program Files\procmon-mcp\`, keeping it only if its Microsoft signature is
      valid
    - register the scheduled task `ProcmonMcpCapture`, which runs a capture with
      administrator rights when asked
@@ -90,7 +90,7 @@ The setup needs the Windows App Runtime 2.x (see Requirements); the MCP server d
    {
      "mcpServers": {
        "procmon": {
-         "command": "C:\\ProgramData\\ProcmonMcp\\bin\\procmon-mcp.exe",
+         "command": "C:\\Program Files\\procmon-mcp\\procmon-mcp.exe",
          "args": ["mcp"]
        }
      }
@@ -182,7 +182,7 @@ Claude Desktop ──stdio──> procmon-mcp.exe mcp        (normal rights)
 Security notes:
 
 - The elevated runner only ever starts the `Procmon64.exe` in the administrator-only
-  `bin`, and only if it is signed by Microsoft.
+  `C:\Program Files\procmon-mcp`, and only if it is signed by Microsoft.
 - It refuses to run if any directory's owner or permissions differ from what `install`
   set.
 - It reads one small request file from `jobs`, which accepts only a hex ID, a duration of
@@ -197,10 +197,11 @@ Use **Settings → Apps → Installed apps → procmon-mcp → Uninstall**, or, 
 administrator terminal:
 
 ```powershell
-C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe uninstall
+& "C:\Program Files\procmon-mcp\procmon-mcp.exe" uninstall
 ```
 
-Either removes the scheduled task, the Installed apps entry and `C:\ProgramData\ProcmonMcp`.
+Either removes the scheduled task, the Installed apps entry, `C:\Program Files\procmon-mcp`
+and `C:\ProgramData\ProcmonMcp`.
 Quit Claude Desktop first; programs still running are moved aside and deleted when Windows
 restarts. Remove the `procmon` entry from Claude Desktop's configuration as well.
 

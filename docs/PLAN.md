@@ -32,7 +32,8 @@ Claude Desktop から「プロセス X を N 秒 Procmon で取得して、何�
 | インストーラー | `install` / `uninstall` は最初から CLI で作り、GUI は最後のフェーズで作る | GUI は外側だけ。作ったものをすべて記録し、アンインストールできる設計を先に固める |
 | GUI インストーラーの方式 | WinUI 3 を `windows-reactor`（windows-rs の宣言的 UI ライブラリ）で作る。Windows App Runtime 2.x はインストール済みを前提にする（framework-dependent） | TaskDialog や Aero Wizard より現在の Windows の見た目に近く、ライト/ダーク、Mica、アクセシビリティが標準で付く。ランタイムを同梱すると約120個のファイルになり、exe 1つで配れなくなる |
 | `windows-reactor` の版 | 0.101（crates.io 未公開）を git のコミット固定で使う | 0.100 にはフォントを指定する API がなく、パスを等幅で表示できない |
-| GUI の配布形態 | 利用者がダウンロードするのは `procmon-mcp-setup.exe` の1つだけ。本体の `procmon-mcp.exe` を埋め込み、インストール時に `bin\` へ書き出す。セットアップ自身も `bin\` にコピーし、アンインストーラーとして「設定 → アプリ」に登録する（HKLM の Uninstall キー） | 本体（MCP サーバー）に WinUI のランタイム依存を持ち込まないため。インストール後にセットアップを消されてもアンインストールできるようにするため |
+| インストール先 | プログラム（`procmon-mcp.exe`、`Procmon64.exe`、セットアップ、状態の `state.json`）は `C:\Program Files\procmon-mcp`、依頼と結果（`jobs`、`out`）は `C:\ProgramData\ProcmonMcp` | 当初はすべて ProgramData に置いていた。Program Files が Windows の慣習どおりのプログラムの置き場所で、AppLocker の既定のルールなどは Windows と Program Files 以下の実行だけを許すため、ProgramData の exe は止められることがある。依頼と結果はデータなので ProgramData に残す。どちらのフォルダーも自前の ACL を設定し、runner が毎回確認する |
+| GUI の配布形態 | 利用者がダウンロードするのは `procmon-mcp-setup.exe` の1つだけ。本体の `procmon-mcp.exe` を埋め込み、インストール時に `C:\Program Files\procmon-mcp` へ書き出す。セットアップ自身もそこにコピーし、アンインストーラーとして「設定 → アプリ」に登録する（HKLM の Uninstall キー） | 本体（MCP サーバー）に WinUI のランタイム依存を持ち込まないため。インストール後にセットアップを消されてもアンインストールできるようにするため |
 | GUI の昇格 | 画面は通常権限で動かし、[インストール] を押したときに、画面のない作業用プロセスを昇格して起動する | ウォークスルーの間は UAC を出さないため |
 | 対象の利用者 | サインインしている利用者自身が管理者の場合だけに対応する。昇格したアカウントとサインイン中の利用者が違う（別アカウントの資格情報で昇格した）ときは、CLI も GUI も中止する | タスクは利用者として「最上位の特権」で動くため、標準ユーザーでは昇格せず、別の管理者として動かすとその人がサインインしていないと起動できない。標準ユーザーへの対応（タスクを SYSTEM で動かす）は、使いたいのが管理者だけなので見送る |
 | GUI の画面構成 | ようこそ → ライセンス → 確認 → インストール → 完了の一本道。戻るはタイトルバー左上（WinUI の TitleBar）、操作ボタンは右下の1つだけ。キャンセルボタンは置かない（閉じるボタンで足りる） | 現在の WinUI の慣習に合わせるため。キャンセルは押し間違えやすいため |
@@ -56,17 +57,17 @@ Claude Desktop ──stdio──> procmon-mcp.exe（通常権限、MCP サーバ
           MCP サーバーが PML を読んで集計 → 結果を返す → 一時ファイルを削除
 ```
 
-### データ置き場（`C:\ProgramData\ProcmonMcp`）
+### 置き場所
 
 | パス | 書き込み | 内容 |
 |---|---|---|
-| `bin\` | 管理者のみ | `procmon-mcp.exe`、`Procmon64.exe`、取得時の `ETag` などの状態 |
-| `jobs\` | ユーザー | `request.json`（MCP サーバーから昇格側への依頼） |
-| `out\<id>\` | 管理者のみ（完成後にユーザーへ読み取りを許可） | `filter.pmc`、`capture.pml`、`done` / `error` |
+| `C:\Program Files\procmon-mcp\` | 管理者のみ | `procmon-mcp.exe`、`Procmon64.exe`、`procmon-mcp-setup.exe`、取得時の `ETag` などの状態 |
+| `C:\ProgramData\ProcmonMcp\jobs\` | ユーザー | `request.json`（MCP サーバーから昇格側への依頼） |
+| `C:\ProgramData\ProcmonMcp\out\<id>\` | 管理者のみ（完成後にユーザーへ読み取りを許可） | `filter.pmc`、`capture.pml`、`done` / `error` |
 
 ## セキュリティ設計
 
-- 昇格側が実行するのは、`bin\`（管理者のみ書き込み可）にある、署名を確認した exe だけ。PATH の検索や、引数で渡されたパスは使わない。
+- 昇格側が実行するのは、`C:\Program Files\procmon-mcp\`（管理者のみ書き込み可）にある、署名を確認した exe だけ。PATH の検索や、引数で渡されたパスは使わない。
 - 昇格側は、ユーザーが書き込める場所に書き込まない。ジャンクションによる任意ファイル上書き（Python 版にあった問題）を防ぐため。
 - 昇格側が受け付ける入力は検証する。
   - ID は32桁の16進、秒数は1〜120の整数。
