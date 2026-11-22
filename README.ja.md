@@ -13,7 +13,7 @@ Claude などの MCP クライアントから
 > → *`C:\Program Files\HuionTablet\res\user.cfg` を約312msごとに読み直しています（約14.6 MiB/s）。
 > そのたびに存在しない `.cfg` を開こうとして、NAME NOT FOUND で失敗しています。*
 
-> **状態:** 初期段階です。Windows 11 と Process Monitor 4.13 で動作を確認しています。
+> Windows 11 と Process Monitor 4.13 で動作を確認しています。
 > 設計と判断の理由は [docs/PLAN.md](docs/PLAN.md) にあります。
 
 ## 機能
@@ -41,24 +41,42 @@ Claude などの MCP クライアントから
 
 ## インストール
 
-### セットアップを使う
+### セットアップをダウンロードする
 
-`procmon-mcp-setup.exe` を実行し、画面の案内に従います。何を変更するかの説明と、
-Sysinternals のライセンスへの同意を経て、**[インストール]** を選んだときにだけ管理者権限を求めます。
-最後の画面には、Claude Desktop の設定をコピーするボタンがあります。セットアップは自身のコピーを残すので、
-**設定 → アプリ → インストールされているアプリ** から procmon-mcp を削除できます。
-
-セットアップには Windows App Runtime 2.x が必要です（「必要なもの」を参照）。MCP サーバーには不要です。
-
-### コマンドラインを使う
-
-1. `procmon-mcp.exe` をビルドします（またはダウンロードします）。
+1. [最新のリリース](https://github.com/ndac-todoroki/procmon-mcp-rs/releases/latest)から
+   `procmon-mcp-setup.exe` をダウンロードします。MCP サーバーも中に入っているので、必要なファイルはこれだけです。
+   ダウンロードしたファイルを確かめるには、次のハッシュを同じリリースの `SHA256SUMS.txt` と比べます。
 
    ```powershell
-   cargo build --release
+   Get-FileHash .\procmon-mcp-setup.exe -Algorithm SHA256
    ```
 
-2. **管理者として開いた**ターミナルで、次を実行します。
+2. 実行します。セットアップにはコード署名がないため、**「Windows によって PC が保護されました」** と
+   表示されることがあります。その場合は **[詳細情報]** を選び、**[実行]** を選びます。
+
+3. 画面の案内に従います。何を変更するかの説明と、Sysinternals のライセンスへの同意を経て、
+   **[インストール]** を選んだときにだけ管理者権限を求めます。最後の画面には、Claude Desktop の設定を
+   コピーするボタンがあります（[Claude Desktop に追加する](#claude-desktop-に追加する)を参照）。
+
+セットアップは自身のコピーを残すので、**設定 → アプリ → インストールされているアプリ** から
+procmon-mcp を削除できます。セットアップには Windows App Runtime 2.x が必要です（「必要なもの」を参照）。
+MCP サーバーには不要です。リリースのファイルは x64 向けにビルドしています。
+
+### 自分でビルドする
+
+1. [Rust](https://rustup.rs/) 1.95 以降（MSVC のツールチェーン）と、Visual Studio Build Tools
+   （**C++ によるデスクトップ開発**。Windows SDK を含む）をインストールします。
+
+2. サーバーをビルドしてから、セットアップをビルドします。セットアップはサーバーを埋め込むので、
+   この順番が必要です。
+
+   ```powershell
+   cargo build --release                        # target\release\procmon-mcp.exe
+   cargo build --release -p procmon-mcp-setup   # target\release\procmon-mcp-setup.exe
+   ```
+
+3. `target\release\procmon-mcp-setup.exe` を[セットアップをダウンロードする](#セットアップをダウンロードする)と
+   同じように実行します。セットアップを使わない場合は、**管理者として開いた**ターミナルで次を実行します。
 
    ```powershell
    .\target\release\procmon-mcp.exe install
@@ -79,19 +97,23 @@ Sysinternals のライセンスへの同意を経て、**[インストール]** 
    [Sysinternals のライセンス条項](https://learn.microsoft.com/sysinternals/license-terms)
    に同意することを意味するため、`install` で同意を求めます（`--accept-eula` を付けると質問を省略します）。
 
-3. Claude Desktop の `claude_desktop_config.json`（設定 → 開発者 → 構成を編集）にサーバーを追加し、
-   Claude Desktop を再起動します。
+### Claude Desktop に追加する
 
-   ```json
-   {
-     "mcpServers": {
-       "procmon": {
-         "command": "C:\\Program Files\\procmon-mcp\\procmon-mcp.exe",
-         "args": ["mcp"]
-       }
-     }
-   }
-   ```
+Claude Desktop の `claude_desktop_config.json`（設定 → 開発者 → 構成を編集）にサーバーを追加し、
+Claude Desktop を再起動します。
+
+```json
+{
+  "mcpServers": {
+    "procmon": {
+      "command": "C:\\Program Files\\procmon-mcp\\procmon-mcp.exe",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### 修復と、インストールできる人
 
 セットアップや `install` をもう一度実行すると、インストールを修復または更新します。Claude Desktop が
 `procmon-mcp.exe` を使用中だと置き換えられないので、先に Claude Desktop を終了してください。
@@ -207,12 +229,8 @@ Claude Desktop の設定から `procmon` の項目も削除してください。
 ## 開発
 
 リポジトリはワークスペースです。サーバー（`procmon-mcp`、ルートのパッケージ）と、サーバーを埋め込む
-セットアップ（`setup/`、`procmon-mcp-setup`）からなります。次の順番でビルドします。
-
-```powershell
-cargo build --release                        # target\release\procmon-mcp.exe
-cargo build --release -p procmon-mcp-setup   # target\release\procmon-mcp-setup.exe
-```
+セットアップ（`setup/`、`procmon-mcp-setup`）からなります。ビルドの順番は[自分でビルドする](#自分でビルドする)を
+参照してください。push のたびに CI が次の確認を行い、`v*` のタグを push するとセットアップを添付したリリースの下書きを作ります。
 
 ```powershell
 cargo test --workspace

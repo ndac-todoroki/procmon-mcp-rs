@@ -13,8 +13,8 @@ which operations fail.
 > → *It rereads `C:\Program Files\HuionTablet\res\user.cfg` every ~312 ms (about 14.6 MiB/s),
 > and each time also tries to open a nonexistent `.cfg`, which fails with NAME NOT FOUND.*
 
-> **Status:** early. Tested on Windows 11 with Process Monitor 4.13. The design and its
-> rationale are in [docs/PLAN.md](docs/PLAN.md) (Japanese).
+> Tested on Windows 11 with Process Monitor 4.13. The design and its rationale are in
+> [docs/PLAN.md](docs/PLAN.md) (Japanese).
 
 ## Features
 
@@ -43,25 +43,45 @@ which operations fail.
 
 ## Installation
 
-### With the setup
+### Download the setup
 
-Run `procmon-mcp-setup.exe` and follow the walkthrough. It explains what it will change,
-asks you to accept the Sysinternals license, and asks for administrator permission only
-when you select **Install**. The last page has a button that copies the Claude Desktop
-settings. The setup keeps a copy of itself, so procmon-mcp can be removed from
-**Settings → Apps → Installed apps**.
-
-The setup needs the Windows App Runtime 2.x (see Requirements); the MCP server does not.
-
-### From the command line
-
-1. Build (or download) `procmon-mcp.exe`:
+1. Download `procmon-mcp-setup.exe` from the
+   [latest release](https://github.com/ndac-todoroki/procmon-mcp-rs/releases/latest).
+   It contains the MCP server, so it is the only file you need. To check the download,
+   compare the hash below with `SHA256SUMS.txt` from the same release:
 
    ```powershell
-   cargo build --release
+   Get-FileHash .\procmon-mcp-setup.exe -Algorithm SHA256
    ```
 
-2. From an **administrator** terminal, run:
+2. Run it. The setup is not code-signed, so Windows may show **Windows protected your
+   PC**; select **More info**, then **Run anyway**.
+
+3. Follow the walkthrough. It explains what it will change, asks you to accept the
+   Sysinternals license, and asks for administrator permission only when you select
+   **Install**. The last page has a button that copies the Claude Desktop settings (see
+   [Add it to Claude Desktop](#add-it-to-claude-desktop)).
+
+The setup keeps a copy of itself, so procmon-mcp can be removed from
+**Settings → Apps → Installed apps**. It needs the Windows App Runtime 2.x (see
+Requirements); the MCP server does not. The release is built for x64.
+
+### Build it yourself
+
+1. Install [Rust](https://rustup.rs/) 1.95 or later with the MSVC toolchain, and the
+   Visual Studio Build Tools (**Desktop development with C++**, which includes the
+   Windows SDK).
+
+2. Build the server, then the setup, which embeds the server and so must come second:
+
+   ```powershell
+   cargo build --release                        # target\release\procmon-mcp.exe
+   cargo build --release -p procmon-mcp-setup   # target\release\procmon-mcp-setup.exe
+   ```
+
+3. Either run `target\release\procmon-mcp-setup.exe` as in
+   [Download the setup](#download-the-setup), or install from an **administrator**
+   terminal without the setup:
 
    ```powershell
    .\target\release\procmon-mcp.exe install
@@ -83,19 +103,23 @@ The setup needs the Windows App Runtime 2.x (see Requirements); the MCP server d
    [Sysinternals Software License Terms](https://learn.microsoft.com/sysinternals/license-terms)
    on your behalf; `install` asks you to accept them (`--accept-eula` skips the question).
 
-3. Add the server to Claude Desktop's `claude_desktop_config.json`
-   (Settings → Developer → Edit Config) and restart Claude Desktop:
+### Add it to Claude Desktop
 
-   ```json
-   {
-     "mcpServers": {
-       "procmon": {
-         "command": "C:\\Program Files\\procmon-mcp\\procmon-mcp.exe",
-         "args": ["mcp"]
-       }
-     }
-   }
-   ```
+Add the server to Claude Desktop's `claude_desktop_config.json`
+(Settings → Developer → Edit Config) and restart Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "procmon": {
+      "command": "C:\\Program Files\\procmon-mcp\\procmon-mcp.exe",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Repairing and who can install
 
 Running the setup or `install` again repairs or refreshes an installation. Quit Claude
 Desktop first, since it keeps `procmon-mcp.exe` in use.
@@ -216,13 +240,9 @@ restarts. Remove the `procmon` entry from Claude Desktop's configuration as well
 ## Development
 
 The repository is a workspace: the server (`procmon-mcp`, the root package) and the
-graphical setup (`setup/`, `procmon-mcp-setup`), which embeds the server. Build them in
-this order:
-
-```powershell
-cargo build --release                        # target\release\procmon-mcp.exe
-cargo build --release -p procmon-mcp-setup   # target\release\procmon-mcp-setup.exe
-```
+graphical setup (`setup/`, `procmon-mcp-setup`), which embeds the server. See
+[Build it yourself](#build-it-yourself) for the build order. CI runs these checks on
+every push, and pushing a `v*` tag drafts a release with the setup attached:
 
 ```powershell
 cargo test --workspace
