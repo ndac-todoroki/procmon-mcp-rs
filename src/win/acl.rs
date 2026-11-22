@@ -159,7 +159,23 @@ mod tests {
         let dir = TempDir::new("set");
         let sddl = sddl_owned_by_me();
         set_security(&dir.0, &sddl).unwrap();
-        assert_eq!(security_sddl(&dir.0).unwrap(), sddl);
+        assert_eq!(
+            security_sddl(&dir.0).unwrap(),
+            canonical_sddl(&sddl).unwrap()
+        );
+    }
+
+    #[test]
+    fn canonical_sddl_renders_well_known_sids_as_aliases() {
+        assert_eq!(
+            canonical_sddl("O:S-1-5-32-544D:PAI(A;OICI;FA;;;S-1-5-18)").unwrap(),
+            "O:BAD:PAI(A;OICI;FA;;;SY)"
+        );
+    }
+
+    #[test]
+    fn canonical_sddl_rejects_malformed_sddl() {
+        assert!(canonical_sddl("D:(not sddl").is_err());
     }
 
     #[test]

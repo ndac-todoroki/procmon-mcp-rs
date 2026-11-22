@@ -173,11 +173,11 @@ mod tests {
         );
     }
 
-    /// The runner compares the SDDL it reads back with these strings, so they must already
-    /// be in the form Windows renders.
+    /// Windows may change how these strings are written (aliases for SIDs), but not what
+    /// they grant: setting one and reading it back gives the same permissions.
     #[test]
     fn sddl_strings_survive_a_round_trip_through_windows() {
-        use crate::win::{current_user_sid, security_sddl, set_security};
+        use crate::win::{canonical_sddl, current_user_sid, security_sddl, set_security};
         let me = current_user_sid().unwrap();
         let dir = std::env::temp_dir().join(format!("procmon-mcp-layout-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -187,7 +187,7 @@ mod tests {
             let mine =
                 sddl.replacen("O:BA", &format!("O:{me}"), 1) + &format!("(A;OICI;FA;;;{me})");
             set_security(&dir, &mine).unwrap();
-            assert_eq!(security_sddl(&dir).unwrap(), mine);
+            assert_eq!(security_sddl(&dir).unwrap(), canonical_sddl(&mine).unwrap());
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
