@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "procmon-mcp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "nyquest",
  "nyquest-backend-winhttp",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "procmon-mcp-setup"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "procmon-mcp",
  "windows",
