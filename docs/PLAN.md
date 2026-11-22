@@ -23,6 +23,7 @@ Claude Desktop から「プロセス X を N 秒 Procmon で取得して、何�
 | フィルター | 最初から PMC を生成する。GUI 既定の除外ルールをテンプレートにし、`DestructiveFilter=1` を設定する | 取得時に絞り込み、ログを小さくするため。`DestructiveFilter=0` だと除外したイベントも PML に書き込まれる |
 | MCP 層 | `serde_json` で JSON-RPC over stdio を自作する（`Value` で扱い、`serde` の derive は使わない） | 同時に処理するのは2〜3件だけで、`std::thread` で足りる。rmcp + tokio は73クレート |
 | MCP のバージョン | 2026-07-28（リクエストごとに `_meta` でバージョンを送る方式）と、2025-11-25 以前（`initialize` で始める方式）の両方に応じる | 仕様の後方互換の節で認められている方式。Claude Desktop がどちらで話すかに依存しないため |
+| モデルへの案内 | `capture` の説明文に「いつ使うか」（ファイルやレジストリの読み書き、ディスクを使い続ける原因、開けない・保存できない理由）を書く。サーバー全体の進め方（プロセスで絞る、記録中に利用者が操作を再現する、`keep_log` と `summarize_log`）は `instructions` に書き、2026-07-28 は `server/discover`、それ以前は `initialize` で返す | 「procmon を使って」と言われなくても使えるようにするため。ツールの説明文はどのクライアントでもモデルに届くが、`instructions` をシステムプロンプトに入れるかはクライアント次第なので、使う判断に要ることは説明文にも書く。仕様に従い、`instructions` ではツールの説明文を繰り返さない |
 | 集計結果の言語 | 英語のみ（切り替えなし） | 読むのは Claude で、ユーザーの言語で説明し直すため |
 | 集計結果の形式 | MCP では JSON（`outputSchema` を宣言し、`structuredContent` と、同じ JSON を文字列にした `content` を返す）。CLI の `summarize` は文章で、`--json` で JSON | 数値が曖昧にならず、項目を足しても壊れない。生の値と計算済みの値を両方入れ、各セクションに `top_n` で切る前の件数（`distinct`）を付ける |
 | Windows API | `windows` クレートで行う（署名の確認、昇格の判定、ACL の設定と確認）。タスクの登録・起動・削除はタスクスケジューラの COM（ITaskService）で、定義は XML の文字列で渡す。unsafe なコードは `src/win/` にまとめる | 当初は `windows-sys` と `schtasks.exe` だったが見直した。実測でバイナリサイズの差は数 KB。`Result` を返す関数、`Owned` によるハンドルの自動解放、エラー型が使え、COM でタスクを直接扱えるので外部プロセスと XML ファイルの書き出しが不要になる。代わりに proc-macro 系（syn など）の依存とビルド時間が増える |
