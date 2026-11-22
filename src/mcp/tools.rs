@@ -79,11 +79,14 @@ pub fn definitions() -> Value {
         "name": "capture",
         "title": "Capture with Process Monitor",
         "description": "Run Sysinternals Process Monitor for a few seconds and summarize what \
-            happened: event counts per process and operation, the most frequent \
-            operation/path pairs with bytes read and written, files reopened periodically \
-            with their intervals, and failed operations. Conditions are applied by Process \
-            Monitor itself, so narrow the capture (process_name or pid) whenever possible. \
-            Requires `procmon-mcp install` to have been run once as administrator.",
+            happened. Use it to find out which files or registry keys a Windows program \
+            reads or writes, what keeps the disk busy, or why a program fails to find, open \
+            or save something. The summary gives event counts per process and operation, \
+            the most frequent operation/path pairs with bytes read and written, files \
+            reopened periodically with their intervals, and failed operations. Conditions \
+            are applied by Process Monitor itself, so narrow the capture (process_name or \
+            pid) whenever possible. Requires procmon-mcp to have been installed once as \
+            administrator (with its setup or `procmon-mcp install`).",
         "inputSchema": {
             "type": "object",
             "properties": {
