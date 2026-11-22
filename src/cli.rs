@@ -29,7 +29,7 @@ pub enum Command {
     Mcp,
     /// Run the pending capture elevated; started by the scheduled task only.
     Runner,
-    /// Set up ProgramData\ProcmonMcp, Process Monitor and the scheduled task (elevated).
+    /// Set up the programs, ProgramData\ProcmonMcp and the scheduled task (elevated).
     Install { accept_eula: bool },
     /// Download Process Monitor again if Sysinternals has a newer one (elevated).
     Update,

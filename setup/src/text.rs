@@ -108,7 +108,7 @@ text_table! {
 
     review_heading: "Ready to install", "インストールの準備ができました";
     review_body: "Setup will make these changes:", "次の変更を行います。";
-    review_folder: "Create the procmon-mcp folder", "procmon-mcp のフォルダーを作成";
+    review_folder: "Create the procmon-mcp folders", "procmon-mcp のフォルダーを作成";
     review_download: "Download Process Monitor", "Process Monitor をダウンロード";
     review_task:
         "Register a scheduled task that runs captures as administrator",
@@ -124,7 +124,7 @@ text_table! {
          サインインしている場合だけです。";
 
     installing_heading: "Installing\u{2026}", "インストールしています\u{2026}";
-    progress_folder: "Create the procmon-mcp folder", "procmon-mcp のフォルダーを作成";
+    progress_folder: "Create the procmon-mcp folders", "procmon-mcp のフォルダーを作成";
     progress_copy: "Copy the programs", "プログラムをコピー";
     progress_download:
         "Download Process Monitor and verify its signature",
@@ -152,9 +152,9 @@ text_table! {
 
     uninstall_heading: "Uninstall procmon-mcp", "procmon-mcp のアンインストール";
     uninstall_body:
-        "This removes the scheduled task and the procmon-mcp folder, including the Process \
+        "This removes the scheduled task and the procmon-mcp folders, including the Process \
          Monitor that Setup downloaded. Quit Claude Desktop first.",
-        "記録用のタスクと、procmon-mcp のフォルダー（セットアップがダウンロードした Process Monitor \
+        "記録用のタスクと、procmon-mcp の2つのフォルダー（セットアップがダウンロードした Process Monitor \
          を含む）を削除します。先に Claude Desktop を終了してください。";
     uninstall: "Uninstall", "アンインストール";
     uninstalling_heading: "Uninstalling\u{2026}", "アンインストールしています\u{2026}";

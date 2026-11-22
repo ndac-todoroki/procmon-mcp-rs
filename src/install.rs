@@ -1,5 +1,5 @@
-//! `install`, `update` and `uninstall`: set up and remove everything under
-//! `C:\ProgramData\ProcmonMcp` plus the scheduled task. All of them run elevated.
+//! `install`, `update` and `uninstall`: set up and remove `C:\Program Files\procmon-mcp`,
+//! `C:\ProgramData\ProcmonMcp` and the scheduled task. All of them run elevated.
 
 use std::io::{BufRead, Write};
 use std::os::windows::fs::MetadataExt;
@@ -23,7 +23,7 @@ pub struct InstallOptions {
 /// The steps of an install, in the order they run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// The root, `bin`, `jobs` and `out` with their ACLs.
+    /// The programs folder, the data folder, `jobs` and `out` with their ACLs.
     Folders,
     /// procmon-mcp.exe, plus the setup when the setup installs.
     Programs,
@@ -37,7 +37,7 @@ impl Step {
     pub const ALL: [Step; 4] = [Step::Folders, Step::Programs, Step::Procmon, Step::Register];
 }
 
-/// Where the programs placed in `bin` come from.
+/// Where the programs placed in the programs folder come from.
 pub enum Programs<'a> {
     /// `procmon-mcp install`: this executable is the server.
     ThisExecutable,
@@ -56,7 +56,7 @@ impl Installer {
     /// Checks that installing may go ahead, before anything changes.
     pub fn prepare() -> Result<Installer, String> {
         require_elevated()?;
-        let layout = Layout::system().map_err(|e| format!("cannot locate ProgramData: {e}"))?;
+        let layout = system_layout()?;
         let user = win::current_user_sid().map_err(|e| format!("cannot identify the user: {e}"))?;
         let signed_in = win::signed_in_user_sid()
             .map_err(|e| format!("cannot identify the signed-in user: {e}"))?;
@@ -73,9 +73,9 @@ impl Installer {
         let layout = &self.layout;
         match step {
             Step::Folders => {
-                prepare_root(layout)?;
+                prepare_top_dir(&layout.programs, &layout::programs_sddl())?;
+                prepare_top_dir(&layout.data, &layout::data_sddl())?;
                 for (dir, sddl) in [
-                    (layout.bin(), layout::bin_sddl()),
                     (layout.jobs(), layout::jobs_sddl(&self.user)),
                     (layout.out(), layout::out_sddl(&self.user)),
                 ] {
@@ -102,7 +102,10 @@ impl Installer {
                 // A CLI repair of a setup install keeps the entry up to date.
                 if layout.setup().is_file() {
                     let entry = win::KeySnapshot {
-                        values: Some(uninstall_entry(layout, installed_size_kib(&layout.bin()))),
+                        values: Some(uninstall_entry(
+                            layout,
+                            installed_size_kib(&layout.programs),
+                        )),
                     };
                     win::restore_key(win::Hive::LocalMachine, UNINSTALL_KEY, &entry)
                         .map_err(|e| format!("cannot add procmon-mcp to Installed apps: {e}"))?;
@@ -136,8 +139,9 @@ pub fn install(options: &InstallOptions) -> Result<(), String> {
     for step in Step::ALL {
         let label = match step {
             Step::Folders => format!(
-                "Creating {}",
-                style.paint(&layout.root.display().to_string(), Color::Code)
+                "Creating {} and {}",
+                style.paint(&layout.programs.display().to_string(), Color::Code),
+                style.paint(&layout.data.display().to_string(), Color::Code)
             ),
             Step::Programs => format!("Copying {}", style.paint("procmon-mcp.exe", Color::Code)),
             Step::Procmon => "Downloading Process Monitor".to_owned(),
@@ -196,19 +200,23 @@ pub enum UpdateOutcome {
 /// Fetches Procmon again only if Sysinternals has a newer one than the installed copy.
 pub fn update() -> Result<UpdateOutcome, String> {
     require_elevated()?;
-    let layout = Layout::system().map_err(|e| format!("cannot locate ProgramData: {e}"))?;
-    crate::runner::check_security(&layout.bin(), &layout::bin_sddl())?;
+    let layout = system_layout()?;
+    crate::runner::check_security(&layout.programs, &layout::programs_sddl())?;
     update_procmon(&layout)
 }
 
-/// Removes the task and everything under ProgramData\ProcmonMcp.
+fn system_layout() -> Result<Layout, String> {
+    Layout::system().map_err(|e| format!("cannot locate Program Files or ProgramData: {e}"))
+}
+
+/// Removes the task and both folders.
 pub fn uninstall() -> Result<(), String> {
     let report = remove_installation()?;
     if report.task_removed {
         eprintln!("Removed the scheduled task {}", task::TASK_NAME);
     }
-    if report.root_removed {
-        eprintln!("Removed {}", report.root.display());
+    for dir in &report.removed {
+        eprintln!("Removed {}", dir.display());
     }
     if report.in_use > 0 {
         eprintln!(
@@ -223,21 +231,20 @@ pub fn uninstall() -> Result<(), String> {
 /// What [`remove_installation`] removed.
 #[derive(Debug)]
 pub struct UninstallReport {
-    pub root: std::path::PathBuf,
     pub task_removed: bool,
-    pub root_removed: bool,
+    /// The folders that existed and were removed.
+    pub removed: Vec<std::path::PathBuf>,
     /// Files in use (running programs) moved aside and deleted at the next restart.
     pub in_use: usize,
 }
 
-/// Removes the task, the Installed apps entry and everything under ProgramData\ProcmonMcp.
+/// Removes the task, the Installed apps entry and both folders with everything in them.
 pub fn remove_installation() -> Result<UninstallReport, String> {
     require_elevated()?;
-    let layout = Layout::system().map_err(|e| format!("cannot locate ProgramData: {e}"))?;
+    let layout = system_layout()?;
     let mut report = UninstallReport {
-        root: layout.root.clone(),
         task_removed: false,
-        root_removed: false,
+        removed: Vec::new(),
         in_use: 0,
     };
     if task::exists().map_err(|e| format!("cannot query the scheduled task: {e}"))? {
@@ -250,23 +257,24 @@ pub fn remove_installation() -> Result<UninstallReport, String> {
         &win::KeySnapshot { values: None },
     )
     .map_err(|e| format!("cannot remove procmon-mcp from Installed apps: {e}"))?;
-    match std::fs::symlink_metadata(&layout.root) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("cannot inspect {}: {e}", layout.root.display())),
-        Ok(_) => {
-            check_ours(&layout.root)?;
-            // On the same volume as ProgramData, so running images can be moved there.
-            let graveyard = win::windows_dir()
-                .map_err(|e| format!("cannot locate the Windows folder: {e}"))?
-                .join("Temp");
-            let retired = remove_tree(&layout.root, &graveyard)?;
-            for path in &retired {
-                win::delete_at_reboot(path)
-                    .map_err(|e| format!("cannot schedule {} for deletion: {e}", path.display()))?;
-            }
-            report.root_removed = true;
-            report.in_use = retired.len();
+    // Usually on the same volume as Program Files and ProgramData, so running images can
+    // be moved there.
+    let graveyard = win::windows_dir()
+        .map_err(|e| format!("cannot locate the Windows folder: {e}"))?
+        .join("Temp");
+    for dir in [&layout.programs, &layout.data] {
+        match std::fs::symlink_metadata(dir) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("cannot inspect {}: {e}", dir.display())),
+            Ok(_) => check_ours(dir)?,
         }
+        let retired = remove_tree(dir, &graveyard)?;
+        for path in &retired {
+            win::delete_at_reboot(path)
+                .map_err(|e| format!("cannot schedule {} for deletion: {e}", path.display()))?;
+        }
+        report.removed.push(dir.clone());
+        report.in_use += retired.len();
     }
     Ok(report)
 }
@@ -281,7 +289,7 @@ pub fn uninstall_entry(layout: &Layout, size_kib: u32) -> Vec<win::RegValue> {
         win::RegValue::string("DisplayName", "procmon-mcp"),
         win::RegValue::string("DisplayVersion", env!("CARGO_PKG_VERSION")),
         win::RegValue::string("DisplayIcon", &setup),
-        win::RegValue::string("InstallLocation", &layout.root.display().to_string()),
+        win::RegValue::string("InstallLocation", &layout.programs.display().to_string()),
         win::RegValue::string("UninstallString", &format!("\"{setup}\" --uninstall")),
         win::RegValue::dword("EstimatedSize", size_kib),
         win::RegValue::dword("NoModify", 1),
@@ -317,22 +325,25 @@ fn require_elevated() -> Result<(), String> {
     }
 }
 
-/// Creates the root, or accepts an existing one only if a previous install made it.
+/// Creates the programs or data folder, or accepts an existing one only if a previous
+/// install made it, then sets its ACL.
 ///
-/// Anyone may create folders in ProgramData. A pre-created root could hold junctions
+/// Anyone may create folders in ProgramData. A pre-created folder could hold junctions
 /// that redirect the elevated install's writes and ACL changes into system folders.
-fn prepare_root(layout: &Layout) -> Result<(), String> {
-    match std::fs::symlink_metadata(&layout.root) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&layout.root)
-            .map_err(|e| format!("cannot create {}: {e}", layout.root.display()))?,
-        Err(e) => return Err(format!("cannot inspect {}: {e}", layout.root.display())),
-        Ok(_) => check_ours(&layout.root)?,
+/// Program Files needs administrators, but is checked the same way.
+fn prepare_top_dir(dir: &Path, sddl: &str) -> Result<(), String> {
+    match std::fs::symlink_metadata(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?
+        }
+        Err(e) => return Err(format!("cannot inspect {}: {e}", dir.display())),
+        Ok(_) => check_ours(dir)?,
     }
-    win::set_security(&layout.root, &layout::root_sddl())
-        .map_err(|e| format!("cannot set permissions on {}: {e}", layout.root.display()))
+    win::set_security(dir, sddl)
+        .map_err(|e| format!("cannot set permissions on {}: {e}", dir.display()))
 }
 
-/// An existing root must be a plain directory owned by Administrators.
+/// An existing programs or data folder must be a plain directory owned by Administrators.
 fn check_ours(root: &Path) -> Result<(), String> {
     ensure_plain_dir(root)?;
     let sddl = win::security_sddl(root)
@@ -554,7 +565,7 @@ pub fn install_notice(layout: &Layout, arch: &str, style: Style) -> String {
         "Welcome to {name} installation!\n\
          \n\
          This will:\n\
-         \x20 - create {root} ({bin}, {jobs}, {out}),\n\
+         \x20 - create {programs} for the programs, and {data} ({jobs}, {out}),\n\
          \x20   writable only by administrators (you may add requests to {jobs}\n\
          \x20   and read or delete results in {out})\n\
          \x20 - copy this program to {server}\n\
@@ -568,8 +579,8 @@ pub fn install_notice(layout: &Layout, arch: &str, style: Style) -> String {
          This MCP server starts Process Monitor with {accept}, which accepts the\n\
          Sysinternals Software License Terms on your behalf:\n\
          \x20 {eula}\n",
-        root = code(&layout.root.display().to_string()),
-        bin = code("bin"),
+        programs = code(&layout.programs.display().to_string()),
+        data = code(&layout.data.display().to_string()),
         jobs = code("jobs"),
         out = code("out"),
         server = code(&layout.server().display().to_string()),
@@ -592,7 +603,7 @@ pub fn confirm_eula(mut input: impl BufRead, mut output: impl Write) -> bool {
     matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
-/// What install remembers between runs, stored in `bin\state.json`.
+/// What install remembers between runs, stored in `state.json` next to the programs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
     /// ETag of the Procmon64.exe currently installed, for conditional updates.
@@ -717,7 +728,7 @@ mod tests {
 
     #[test]
     fn installed_apps_entry_runs_the_installed_setup_to_uninstall() {
-        let layout = Layout::under(Path::new(r"C:\ProgramData"));
+        let layout = Layout::new(Path::new(r"C:\Program Files"), Path::new(r"C:\ProgramData"));
         let values = uninstall_entry(&layout, 4321);
         let s = |name| value(&values, name);
         let string = win::RegValue::string;
@@ -726,19 +737,19 @@ mod tests {
             s("UninstallString"),
             string(
                 "UninstallString",
-                r#""C:\ProgramData\ProcmonMcp\bin\procmon-mcp-setup.exe" --uninstall"#
+                r#""C:\Program Files\procmon-mcp\procmon-mcp-setup.exe" --uninstall"#
             )
         );
         assert_eq!(
             s("DisplayIcon"),
             string(
                 "DisplayIcon",
-                r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp-setup.exe"
+                r"C:\Program Files\procmon-mcp\procmon-mcp-setup.exe"
             )
         );
         assert_eq!(
             s("InstallLocation"),
-            string("InstallLocation", r"C:\ProgramData\ProcmonMcp")
+            string("InstallLocation", r"C:\Program Files\procmon-mcp")
         );
         assert_eq!(
             s("DisplayVersion"),
@@ -789,7 +800,7 @@ mod tests {
     }
 
     fn notice() -> String {
-        let layout = Layout::under(Path::new(r"C:\ProgramData"));
+        let layout = Layout::new(Path::new(r"C:\Program Files"), Path::new(r"C:\ProgramData"));
         install_notice(&layout, "x86_64", Style::plain())
     }
 
@@ -802,9 +813,10 @@ mod tests {
         );
         for expected in [
             r"C:\ProgramData\ProcmonMcp",
-            r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe",
+            r"C:\Program Files\procmon-mcp",
+            r"C:\Program Files\procmon-mcp\procmon-mcp.exe",
             "https://live.sysinternals.com/Procmon64.exe",
-            r"C:\ProgramData\ProcmonMcp\bin\Procmon64.exe",
+            r"C:\Program Files\procmon-mcp\Procmon64.exe",
             crate::task::TASK_NAME,
         ] {
             assert!(
@@ -826,7 +838,7 @@ mod tests {
 
     #[test]
     fn notice_names_the_arm64_build_on_arm64() {
-        let layout = Layout::under(Path::new(r"C:\ProgramData"));
+        let layout = Layout::new(Path::new(r"C:\Program Files"), Path::new(r"C:\ProgramData"));
         let notice = install_notice(&layout, "aarch64", Style::plain());
         assert!(
             notice.contains("https://live.sysinternals.com/Procmon64a.exe"),
@@ -836,7 +848,7 @@ mod tests {
 
     #[test]
     fn notice_colors_the_product_name_on_a_terminal() {
-        let layout = Layout::under(Path::new(r"C:\ProgramData"));
+        let layout = Layout::new(Path::new(r"C:\Program Files"), Path::new(r"C:\ProgramData"));
         let on = Style { enabled: true };
         let notice = install_notice(&layout, "x86_64", on);
         assert!(notice.starts_with(&format!(
@@ -847,14 +859,15 @@ mod tests {
 
     #[test]
     fn notice_colors_paths_urls_and_switches_as_code() {
-        let layout = Layout::under(Path::new(r"C:\ProgramData"));
+        let layout = Layout::new(Path::new(r"C:\Program Files"), Path::new(r"C:\ProgramData"));
         let on = Style { enabled: true };
         let notice = install_notice(&layout, "x86_64", on);
         for code in [
             r"C:\ProgramData\ProcmonMcp",
-            r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe",
+            r"C:\Program Files\procmon-mcp",
+            r"C:\Program Files\procmon-mcp\procmon-mcp.exe",
             "https://live.sysinternals.com/Procmon64.exe",
-            r"C:\ProgramData\ProcmonMcp\bin\Procmon64.exe",
+            r"C:\Program Files\procmon-mcp\Procmon64.exe",
             crate::task::TASK_NAME,
             "/AcceptEula",
             EULA_URL,
@@ -884,12 +897,12 @@ mod tests {
     #[test]
     fn claude_desktop_entry_runs_the_installed_server_in_mcp_mode() {
         let entry =
-            claude_desktop_entry(Path::new(r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe"));
+            claude_desktop_entry(Path::new(r"C:\Program Files\procmon-mcp\procmon-mcp.exe"));
         let v: Value = serde_json::from_str(&entry).unwrap();
         assert_eq!(
             v,
             json!({"procmon": {
-                "command": r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe",
+                "command": r"C:\Program Files\procmon-mcp\procmon-mcp.exe",
                 "args": ["mcp"]
             }})
         );

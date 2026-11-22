@@ -110,8 +110,8 @@ fn prepare(layout: &Layout) -> Result<CaptureRequest, String> {
         return Err("the runner must be started elevated by the scheduled task".to_owned());
     }
     let user = win::current_user_sid().map_err(|e| format!("cannot identify the user: {e}"))?;
-    check_security(&layout.root, &layout::root_sddl())?;
-    check_security(&layout.bin(), &layout::bin_sddl())?;
+    check_security(&layout.programs, &layout::programs_sddl())?;
+    check_security(&layout.data, &layout::data_sddl())?;
     check_security(&layout.jobs(), &layout::jobs_sddl(&user))?;
     check_security(&layout.out(), &layout::out_sddl(&user))?;
     // Checked again here: Process Monitor may have been opened since the server checked.

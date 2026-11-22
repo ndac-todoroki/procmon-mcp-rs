@@ -140,7 +140,7 @@ mod tests {
 
     fn xml() -> String {
         task_xml(
-            Path::new(r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe"),
+            Path::new(r"C:\Program Files\procmon-mcp\procmon-mcp.exe"),
             SID,
         )
     }
@@ -157,7 +157,7 @@ mod tests {
         let xml = xml();
         assert_eq!(
             element(&xml, "Command"),
-            Some(r"C:\ProgramData\ProcmonMcp\bin\procmon-mcp.exe")
+            Some(r"C:\Program Files\procmon-mcp\procmon-mcp.exe")
         );
         assert_eq!(element(&xml, "Arguments"), Some("runner"));
     }

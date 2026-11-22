@@ -102,7 +102,7 @@ mod tests {
         fn new(name: &str) -> Self {
             let root = std::env::temp_dir()
                 .join(format!("procmon-mcp-capture-{name}-{}", std::process::id()));
-            let layout = Layout { root };
+            let layout = Layout::new(&root, &root);
             std::fs::create_dir_all(layout.jobs()).unwrap();
             std::fs::create_dir_all(layout.out()).unwrap();
             TempLayout(layout)
@@ -111,7 +111,7 @@ mod tests {
 
     impl Drop for TempLayout {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0.root);
+            let _ = std::fs::remove_dir_all(self.0.data.parent().unwrap());
         }
     }
 

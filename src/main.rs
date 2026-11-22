@@ -24,7 +24,7 @@ fn main() -> ExitCode {
         },
         Command::Runner => {
             let result = procmon_mcp::layout::Layout::system()
-                .map_err(|e| format!("cannot locate ProgramData: {e}"))
+                .map_err(|e| format!("cannot locate Program Files or ProgramData: {e}"))
                 .and_then(|layout| procmon_mcp::runner::run(&layout));
             match result {
                 Ok(()) => ExitCode::SUCCESS,

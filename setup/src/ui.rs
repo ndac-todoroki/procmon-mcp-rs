@@ -410,8 +410,9 @@ impl Setup {
                         ICON_FOLDER,
                         t.review_folder,
                         small(&format!(
-                            "{}\\{{bin, jobs, out}}",
-                            self.path(|l| l.root.clone())
+                            "{}\n{}\\{{jobs, out}}",
+                            self.path(|l| l.programs.clone()),
+                            self.path(|l| l.data.clone())
                         )),
                     ),
                     item(
@@ -513,7 +514,11 @@ impl Setup {
             .children((
                 heading(t.uninstall_heading),
                 body(t.uninstall_body),
-                code(&self.path(|l| l.root.clone())),
+                code(&format!(
+                    "{}\n{}",
+                    self.path(|l| l.programs.clone()),
+                    self.path(|l| l.data.clone())
+                )),
             ))
             .into()
     }

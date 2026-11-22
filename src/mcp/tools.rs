@@ -151,7 +151,8 @@ fn capture_request(args: &Value) -> Result<(CaptureRequest, usize, bool), String
 
 fn capture(args: &Value, progress: &mut ProgressFn<'_>) -> Result<ToolOutput, String> {
     let (request, top_n, keep_log) = capture_request(args)?;
-    let layout = Layout::system().map_err(|e| format!("cannot locate ProgramData: {e}"))?;
+    let layout =
+        Layout::system().map_err(|e| format!("cannot locate Program Files or ProgramData: {e}"))?;
     let installed = layout.procmon().is_file() && task::exists().unwrap_or(false);
     if !installed {
         return Err(
